@@ -1,0 +1,12 @@
+[project]
+name = "sololaw-be-rag"
+version = "0.1.0"
+description = "나홀로 소송 AI Agent의 FastAPI 기반 AI 추론 서버"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+    "python-dotenv",
+]

@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# uv
+.uv/
+
+# Claude Code (personal only)
+CLAUDE.local.md
+.claude/settings.local.json
