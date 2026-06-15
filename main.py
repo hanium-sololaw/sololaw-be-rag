@@ -1,18 +1,17 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    APP_NAME: str = "sololaw-be-rag"
-    ENV: str = "local"
-    OPENAI_API_KEY: str = ""  # placeholder, 실제 키는 .env에서 주입
-
-
-settings = Settings()
+from app.core.config import settings
 
 app = FastAPI(title=settings.APP_NAME)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
