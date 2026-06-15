@@ -27,17 +27,19 @@
 - Infra: AWS EC2 / S3, Docker, GitHub Actions (추후)
 - 설정: pydantic-settings + `.env`
 
-## 현재 구조 (최소)
-루트에 `main.py` 단일 파일부터 시작. `app/` 패키지 구조(agents/rag/services 등)는
-기능을 붙이면서 점진적으로 도입한다. 지금은 디렉토리를 만들지 않는다.
+## 현재 구조
+`app/` 패키지 골격을 잡아둔 상태 (`core/ api/v1/ schemas/ agents/ rag/ services/ prompts/`).
+폴더는 비어 있고, 실제 파일은 기능을 붙이면서 수직(schema→api→service)으로 채운다.
+엔트리는 루트 `main.py`.
 
 ## 아키텍처 (잠정, TBD)
 사용자 입력 → Supervisor Agent → 판례 검색 Agent (RAG) → 문서 생성 Agent → 설명 Agent (XAI) → 최종 출력
 
-## 연동 (요청 유입 경로 TBD)
+## 연동 (프론트 직접 호출)
+- 프론트엔드가 본 FastAPI 서버를 **직접 호출**한다 (AI 기능 한정). 로그인·CRUD는 프론트 → 스프링.
+- 본 서버가 외부에 직접 노출되므로 **CORS 설정 + 인증 토큰 검증**이 필요. (JWT 키 공유 방식은 스프링과 협의 예정)
 - Spring Boot ↔ FastAPI: REST(JSON) 통신.
-- 요청 유입 경로는 미정: ① Spring이 사용자 요청을 받아 본 서버로 전달하거나, ② 클라이언트 요청이 본 FastAPI 서버로 직접 들어올 수도 있음.
-- 어느 경우든 본 서버는 AI 추론 결과를 JSON으로 반환한다.
+- 본 서버는 AI 추론 결과를 JSON으로 반환한다.
 - 모든 AI 관련 로직은 본 FastAPI 서버에서 처리.
 
 ## 개발 규칙
