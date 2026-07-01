@@ -1,6 +1,6 @@
 services:
   app:
-    image: ${DOCKER_USERNAME}/${DOCKER_REPO}:${DOCKER_TAG:-dev-latest}
+    image: ${DOCKER_USERNAME}/${DOCKER_REPO}:${DOCKER_TAG:-latest}
     container_name: sololaw-be-rag
     ports:
       - "18000:8000"
