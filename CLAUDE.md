@@ -24,13 +24,14 @@
 - AI/ML: LangChain, LangGraph (도입 예정)
 - LLM: **OpenAI API**
 - RAG: 벡터스토어 (FAISS 또는 pgvector) (TBD)
-- Infra: AWS EC2 / S3, Docker, GitHub Actions (추후)
+- Infra: AWS EC2(스프링과 공용 1대), Docker, GitHub Actions — **CI/CD 구축 완료** (자세한 건 `## 배포 / CI-CD`)
 - 설정: pydantic-settings + `.env`
 
 ## 현재 구조
 `app/` 패키지 골격을 잡아둔 상태 (`core/ api/v1/ schemas/ agents/ rag/ services/ prompts/`).
 폴더는 비어 있고, 실제 파일은 기능을 붙이면서 수직(schema→api→service)으로 채운다.
 엔트리는 루트 `main.py`.
+배포 관련으로 `docker/`(Dockerfile·docker-compose.yml), `.github/workflows/`(ci.yml·cd.yml), 루트 `.dockerignore`가 추가돼 있다.
 
 ## 아키텍처 (잠정, TBD)
 사용자 입력 → Supervisor Agent → 판례 검색 Agent (RAG) → 문서 생성 Agent → 설명 Agent (XAI) → 최종 출력
@@ -42,8 +43,15 @@
 - 본 서버는 AI 추론 결과를 JSON으로 반환한다.
 - 모든 AI 관련 로직은 본 FastAPI 서버에서 처리.
 
+## 배포 / CI-CD
+- 스프링 레포(`sololaw-be-spring`) CI/CD를 미러링, Java/Gradle → Python(uv)로 치환. 단, **단일 EC2라 dev/prod를 나누지 않고 배포는 `main` 단일로 통합**.
+- 이미지: DockerHub `zmarzmar/sololaw-be-rag:latest`. 서버: 공용 EC2 `/opt/sololaw-be-rag`, 컨테이너 `sololaw-be-rag`, 포트 `18000:8000`, 외부 네트워크 `sololaw-network`(스프링과 공유, external).
+- 흐름: `feature/*` 작업 → PR(`ci.yml`: Ruff + 빌드 검증) → `main` 머지 → `cd.yml`: 이미지 빌드·push → EC2 자동 배포.
+- 배포 설정값은 GitHub Secrets로 관리(`DOCKER_USERNAME/PASSWORD/REPO`, `SSH_*`, `ENV_FILE`). `ENV_FILE`이 배포 시 서버 `.env`로 떨어진다. **실제 값은 커밋 금지.**
+- RAG 컨테이너만 뜨고 내리므로 스프링·postgres·redis엔 영향 없음(스코프 격리).
+
 ## 개발 규칙
-- 브랜치: `main`, `develop`, `feature/<기능명>` (스프링 레포와 동일)
+- 브랜치: `main`, `feature/<기능명>` — 작업은 feature 브랜치, `main` 머지 시 자동 배포(단일 EC2). (스프링은 `develop`도 쓰나 RAG 배포는 `main` 단일.)
 - 커밋: `{emoji} {Type}: 설명` — **설명은 한글로 작성**
   | 이모지 | 타입 | 설명 |
   |---|---|---|
@@ -67,3 +75,4 @@
 5. Commit: 사용자 확인을 받은 뒤에만 커밋한다.
 6. Push: 자동으로 push 하지 않는다. push는 사용자가 명시적으로 지시할 때만 수행한다.
 - 요청하지 않은 디렉토리/파일을 임의로 만들지 않는다. 초기엔 스텁/`# TODO` 위주.
+- `CLAUDE.md` 자체를 수정할 때는 별도 브랜치를 만들지 않고 `main`에 직접 커밋한다.
