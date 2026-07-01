@@ -6,9 +6,9 @@ class Settings(BaseSettings):
 
     APP_NAME: str = "sololaw-be-rag"
     ENV: str = "local"
-    OPENAI_API_KEY: str = "" 
+    OPENAI_API_KEY: str = ""
 
-    # CORS 허용 출처 
+    # CORS 허용 출처
     cors_origins: list[str] = ["http://localhost:5173"]
 
 
