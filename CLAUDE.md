@@ -28,9 +28,13 @@
 - 설정: pydantic-settings + `.env`
 
 ## 현재 구조
-`app/` 패키지 골격을 잡아둔 상태 (`core/ api/v1/ schemas/ agents/ rag/ services/ prompts/`).
-폴더는 비어 있고, 실제 파일은 기능을 붙이면서 수직(schema→api→service)으로 채운다.
-엔트리는 루트 `main.py`.
+**도메인 기반(feature module) 구조.** 각 도메인은 `app/<도메인>/` 폴더 하나에 router·schemas·service·generators·prompts를 자체 완결로 모은다 (레이어별로 흩지 않음).
+- `app/core/` — 공통 설정/유틸 (`config.py` 등).
+- `app/documents/` — 문서 생성 도메인 (소장/준비서면/증거목록/신청서). 구성: `router.py`(API), `schemas.py`, `service.py`(오케스트레이션), `registry.py`(유형→생성기 매핑), `generators/`(유형별 생성 로직), `prompts/`(유형별 프롬프트). **새 문서 유형 = generators/·prompts/에 파일 추가 + registry 한 줄 등록**, 라우터·서비스는 불변.
+- 향후 도메인: `app/cases/`(판례 검색), `app/evidence/`(증거 분석) 등 동일 패턴. 도메인 공통 AI 인프라(LLM/RAG/LangGraph)는 필요 시 `app/shared/`에 둔다.
+- 엔트리는 루트 `main.py` — 각 도메인 `router`를 `/api/v1` 아래로 `include_router`.
+- 초기라 도메인 파일은 스텁 + `# TODO` 위주(실제 LLM 로직 미구현).
+
 배포 관련으로 `docker/`(Dockerfile·docker-compose.yml), `.github/workflows/`(ci.yml·cd.yml), 루트 `.dockerignore`가 추가돼 있다.
 
 ## 아키텍처 (잠정, TBD)
