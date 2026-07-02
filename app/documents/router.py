@@ -85,9 +85,12 @@ async def generate_evidence_list(req: EvidenceListInput):
 
 @router.post(
     "/application/generate",
-    summary="신청서 AI 생성 (미구현)",
+    summary="신청서 자동 생성",
     response_description="SSE 스트림 (delta*N → done)",
-    description="신청서를 AI 로 생성한다.\n" + _SSE_DOC,
+    description="신청서 종류(기일변경·문서송부촉탁·보정서·소송구조)와 사건·당사자 정보, "
+    "신청 사유를 법원 제출용 신청서로 변환한다.\n\n"
+    "**done** 이벤트의 **sections** 는 제목, 사건, 신청취지, 신청이유, 첨부서류, "
+    "관할법원 6개 필드 (**ApplicationSections**).\n" + _SSE_DOC,
 )
 async def generate_application(req: ApplicationInput):
     return StreamingResponse(

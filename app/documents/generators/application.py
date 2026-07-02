@@ -1,15 +1,31 @@
-"""신청서(application) 생성기."""
+"""신청서(application) 생성기 — OpenAI 스트리밍."""
 
 from collections.abc import AsyncIterator
 
+from app.core.config import settings
 from app.documents.generators.base import BaseGenerator
+from app.documents.prompts import application as prompt
+from app.documents.schemas.application import ApplicationInput
 from app.documents.schemas.common import DocumentType
+from app.shared.llm import get_openai_client
 
 
 class ApplicationGenerator(BaseGenerator):
     doc_type = DocumentType.APPLICATION
+    section_map = prompt.SECTION_MAP
 
     async def generate_stream(self, inputs: dict) -> AsyncIterator[str]:
-        # TODO: 신청서 스트리밍 생성 구현
-        raise NotImplementedError("신청서 생성 미구현")
-        yield  # async generator 표식 (도달하지 않음)
+        data = ApplicationInput(
+            **inputs
+        )  # dict → 타입 검증 (라우터에서 이미 검증되지만 방어)
+        stream = await get_openai_client().chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            stream=True,
+            messages=[
+                {"role": "system", "content": prompt.SYSTEM},
+                {"role": "user", "content": prompt.build_user_prompt(data)},
+            ],
+        )
+        async for chunk in stream:
+            if chunk.choices and (delta := chunk.choices[0].delta.content):
+                yield delta
