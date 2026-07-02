@@ -68,6 +68,7 @@
   | 🔥 | Remove | Delete files |
   | 📝 | Docs | Update documentation |
   - 예) `✨ Feat: 판례 검색 엔드포인트 추가`
+  - 설명은 조사 없이 명사형으로 간결하게 쓰고, 괄호를 넣지 않는다. 커밋 본문도 동일. 예) `✨ Feat: 신청서 자동 생성 구현` — `(SSE 스트리밍)` 같은 괄호 표기 금지
 - 환경변수는 `.env`로 관리, `.env.example` 항상 최신 유지. **실제 키·시크릿 커밋 금지.**
 - 의존성은 `uv add`로 추가하고 `pyproject.toml` / `uv.lock` 커밋.
 
