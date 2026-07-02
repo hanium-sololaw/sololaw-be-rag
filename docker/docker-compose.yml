@@ -8,6 +8,7 @@ services:
       APP_NAME: ${APP_NAME:-sololaw-be-rag}
       ENV: ${ENV:-dev}
       TZ: Asia/Seoul
+      ROOT_PATH: ${ROOT_PATH:-}
 
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS}
