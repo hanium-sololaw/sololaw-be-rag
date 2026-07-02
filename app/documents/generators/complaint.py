@@ -1,6 +1,7 @@
 """소장(complaint) 생성기 — OpenAI 스트리밍."""
 
 from collections.abc import AsyncIterator
+from functools import lru_cache
 
 from openai import AsyncOpenAI
 
@@ -10,7 +11,12 @@ from app.documents.prompts import complaint as prompt
 from app.documents.schemas.common import DocumentType
 from app.documents.schemas.complaint import ComplaintInput
 
-_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+@lru_cache
+def _get_client() -> AsyncOpenAI:
+    # 지연 생성: import 시점이 아니라 실제 생성 호출 시점에만 키를 요구한다.
+    # (키 없이도 모듈 import·앱 기동이 가능해야 함 — CI 스모크 테스트 등)
+    return AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 
 class ComplaintGenerator(BaseGenerator):
@@ -21,7 +27,7 @@ class ComplaintGenerator(BaseGenerator):
         data = ComplaintInput(
             **inputs
         )  # dict → 타입 검증 (라우터에서 이미 검증되지만 방어)
-        stream = await _client.chat.completions.create(
+        stream = await _get_client().chat.completions.create(
             model=settings.OPENAI_MODEL,
             stream=True,
             messages=[
