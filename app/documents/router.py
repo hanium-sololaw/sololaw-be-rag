@@ -1,0 +1,96 @@
+"""문서 생성 API 라우터.
+
+유형별로 엔드포인트를 나누되(입력 타입 명확), 생성 로직은 service 의 공용
+스트리밍 파이프라인을 공유한다. 응답은 SSE(text/event-stream).
+"""
+
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+
+from app.documents import service
+from app.documents.schemas.application import ApplicationInput
+from app.documents.schemas.brief import BriefInput
+from app.documents.schemas.common import DocumentType, DocumentTypeInfo
+from app.documents.schemas.complaint import ComplaintInput
+from app.documents.schemas.evidence_list import EvidenceListInput
+
+router = APIRouter(prefix="/documents", tags=["documents"])
+
+SSE_MEDIA = "text/event-stream"
+
+# 생성 엔드포인트 공통 응답 설명
+_SSE_DOC = """
+---
+
+**생성 엔드포인트 관련 공동 응답 설명**
+
+스트리밍 응답 — 발생 이벤트(event):
+
+1. **delta** — 생성 중 보이는 실시간 스트리밍 문자. **data: {"text": "..."}**
+2. **done** — 생성 완료. **data: {"sections": {섹션별 구조화}, "raw_text": "전체 원문"}**
+3. **error** — 실패 시. **data: {"message": "..."}**
+"""
+
+
+@router.get(
+    "/types",
+    response_model=list[DocumentTypeInfo],
+    summary="문서 유형 목록",
+    description="작성 가능한 문서 유형 카드 목록 (step1: 문서 선택).",
+)
+def get_document_types():
+    return service.list_document_types()
+
+
+@router.post(
+    "/complaint/generate",
+    summary="소장 자동 생성",
+    response_description="SSE 스트림 (delta*N → done)",
+    description="입력 정보(법원·소송유형·당사자·청구원인 등)를 법원 제출용 소장으로 변환한다.\n\n"
+    "**done** 이벤트의 **sections** 는 사건명, 소송목적의 값, 당사자, 청구취지, 청구원인, "
+    "입증방법, 첨부서류, 관할법원 8개 필드 (**ComplaintSections**).\n" + _SSE_DOC,
+)
+async def generate_complaint(req: ComplaintInput):
+    return StreamingResponse(
+        service.stream_document(DocumentType.COMPLAINT, req.model_dump()),
+        media_type=SSE_MEDIA,
+    )
+
+
+@router.post(
+    "/brief/generate",
+    summary="준비서면 AI 생성 (미구현)",
+    response_description="SSE 스트림 (delta*N → done)",
+    description="준비서면을 AI 로 생성한다.\n" + _SSE_DOC,
+)
+async def generate_brief(req: BriefInput):
+    return StreamingResponse(
+        service.stream_document(DocumentType.BRIEF, req.model_dump()),
+        media_type=SSE_MEDIA,
+    )
+
+
+@router.post(
+    "/evidence-list/generate",
+    summary="증거목록 AI 생성 (미구현)",
+    response_description="SSE 스트림 (delta*N → done)",
+    description="증거목록을 AI 로 생성한다.\n" + _SSE_DOC,
+)
+async def generate_evidence_list(req: EvidenceListInput):
+    return StreamingResponse(
+        service.stream_document(DocumentType.EVIDENCE_LIST, req.model_dump()),
+        media_type=SSE_MEDIA,
+    )
+
+
+@router.post(
+    "/application/generate",
+    summary="신청서 AI 생성 (미구현)",
+    response_description="SSE 스트림 (delta*N → done)",
+    description="신청서를 AI 로 생성한다.\n" + _SSE_DOC,
+)
+async def generate_application(req: ApplicationInput):
+    return StreamingResponse(
+        service.stream_document(DocumentType.APPLICATION, req.model_dump()),
+        media_type=SSE_MEDIA,
+    )
