@@ -75,9 +75,13 @@ async def generate_brief(req: BriefInput):
 
 @router.post(
     "/evidence-list/generate",
-    summary="증거목록 AI 생성 (미구현)",
+    summary="증거목록 자동 생성",
     response_description="SSE 스트림 (delta*N → done)",
-    description="증거목록을 AI 로 생성한다.\n" + _SSE_DOC,
+    description="사건 정보와 증거 목록을 법원 제출용 증거목록으로 변환한다. "
+    "호증 번호는 evidence_items 리스트 순서대로 서버가 확정하고 — 제출자 지위에 따라 "
+    "갑·을·병 접두어 — AI 는 비어 있는 입증취지 제안과 표 정리만 담당한다.\n\n"
+    "**done** 이벤트의 **sections** 는 제목, 사건, 증거목록, 비고, 관할법원 "
+    "5개 필드 (**EvidenceListSections**).\n" + _SSE_DOC,
 )
 async def generate_evidence_list(req: EvidenceListInput):
     return StreamingResponse(
