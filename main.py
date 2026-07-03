@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.openapi import install_upload_schema_fix
 from app.documents.router import router as documents_router
 
 app = FastAPI(
@@ -22,6 +23,9 @@ app.add_middleware(
 
 # 도메인 라우터 등록 (도메인 추가 시 여기에 include_router 한 줄)
 app.include_router(documents_router, prefix="/api/v1")
+
+# Swagger 파일 업로드 렌더링 보정 (OpenAPI 3.1 contentMediaType + format: binary 병기)
+install_upload_schema_fix(app)
 
 
 @app.get("/")
