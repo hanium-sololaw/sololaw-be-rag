@@ -90,7 +90,12 @@ async def generate_evidence_list(req: EvidenceListInput):
     description="신청서 종류(기일변경·문서송부촉탁·보정서·소송구조)와 사건·당사자 정보, "
     "신청 사유를 법원 제출용 신청서로 변환한다.\n\n"
     "**done** 이벤트의 **sections** 는 제목, 사건, 신청취지, 신청이유, 첨부서류, "
-    "관할법원 6개 필드 (**ApplicationSections**).\n" + _SSE_DOC,
+    "관할법원 6개 필드 (**ApplicationSections**).\n\n\n"
+    "**신청서 종류**\n\n"
+    "hearing_date_change=기일변경신청서\n\n"
+    "document_transmission=문서송부촉탁신청서\n\n"
+    "correction=보정서/보정신청서\n\n "
+    "litigation_aid=소송구조신청서\n\n"+ _SSE_DOC,
 )
 async def generate_application(req: ApplicationInput):
     return StreamingResponse(
