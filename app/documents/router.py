@@ -59,9 +59,12 @@ async def generate_complaint(req: ComplaintInput):
 
 @router.post(
     "/brief/generate",
-    summary="준비서면 AI 생성 (미구현)",
+    summary="준비서면 자동 생성",
     response_description="SSE 스트림 (delta*N → done)",
-    description="준비서면을 AI 로 생성한다.\n" + _SSE_DOC,
+    description="사건 정보와 반박할 상대방 주장, 내 주장·새로운 증거, 인용 판례를 "
+    "법원 제출용 준비서면으로 변환한다.\n\n"
+    "**done** 이벤트의 **sections** 는 사건, 상대방 주장의 요지, 반박, 결론, "
+    "입증방법, 관할법원 6개 필드 (**BriefSections**).\n" + _SSE_DOC,
 )
 async def generate_brief(req: BriefInput):
     return StreamingResponse(
@@ -95,7 +98,7 @@ async def generate_evidence_list(req: EvidenceListInput):
     "hearing_date_change=기일변경신청서\n\n"
     "document_transmission=문서송부촉탁신청서\n\n"
     "correction=보정서/보정신청서\n\n "
-    "litigation_aid=소송구조신청서\n\n"+ _SSE_DOC,
+    "litigation_aid=소송구조신청서\n\n" + _SSE_DOC,
 )
 async def generate_application(req: ApplicationInput):
     return StreamingResponse(
