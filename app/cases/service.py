@@ -1,7 +1,9 @@
-"""판례 검색 오케스트레이션.
+"""판례 검색 오케스트레이션 — 2단계 랭킹.
 
-검색(law.go.kr) → 분야 필터 → 본문 병렬 조회 → LLM 관련도·참고 포인트 병렬 산출
-→ 참조조문 집계(관련 법령) → 관련도순 응답.
+검색(law.go.kr) → 분야 필터 → 후보 전체 본문 병렬 조회
+→ [예선] LLM 1회 일괄 관련도 채점 → 상위 limit 건 선발
+→ [본선] 참고 포인트 병렬 생성 → 참조조문 집계(관련 법령) → 응답.
+점수의 출처는 예선 하나로 통일한다.
 """
 
 import asyncio
@@ -11,12 +13,14 @@ import re
 import httpx
 
 from app.cases import client
-from app.cases.prompts import relevance as prompt
+from app.cases.prompts import relevance as note_prompt
+from app.cases.prompts import rerank as rerank_prompt
 from app.cases.schemas import (
     CaseCard,
     CaseCategory,
+    NoteDraft,
     RelatedStatute,
-    RelevanceDraft,
+    RerankDraft,
     SearchRequest,
     SearchResponse,
 )
@@ -25,7 +29,9 @@ from app.shared.llm import get_openai_client
 
 logger = logging.getLogger(__name__)
 
-_CONCURRENCY = 5  # 동시 LLM 호출 제한
+_CANDIDATES = 20  # 예선 후보 수 (law.go.kr 조회 건수)
+_EXCERPT_CHARS = 300  # 예선용 판시사항 발췌 길이
+_CONCURRENCY = 5  # 동시 LLM 호출 제한 (본선)
 
 # 분야 필터 → 국가법령정보센터 사건종류명 매칭 문자열
 _CATEGORY_LABELS: dict[CaseCategory, str] = {
@@ -62,19 +68,61 @@ def _aggregate_statutes(texts: list[str], top: int = 5) -> list[RelatedStatute]:
     return [RelatedStatute(name=n, count=c) for n, c in ranked[:top]]
 
 
-async def _score_case(req: SearchRequest, item: dict, detail: dict) -> CaseCard:
-    """판례 한 건의 관련도·참고 포인트를 LLM 으로 산출해 카드로 만든다."""
-    serial_id = str(item.get("판례일련번호", ""))
-    name = item.get("사건명", "")
-    relevance, note = 0, "AI 분석에 실패했습니다."
+def _ranked_indices(n: int, score_map: dict[int, int]) -> list[tuple[int, int]]:
+    """(후보 인덱스, 0~100 보정 점수) 를 점수 내림차순으로 반환. 누락 후보는 0점."""
+    scored = [(i, max(0, min(100, score_map.get(i, 0)))) for i in range(n)]
+    return sorted(scored, key=lambda x: -x[1])
+
+
+async def _rerank(
+    req: SearchRequest, items: list[dict], details: list[dict]
+) -> list[tuple[int, int]]:
+    """예선 — 후보 전체를 LLM 1회로 일괄 채점. 실패 시 검색 순서 폴백(0점)."""
+    candidates = [
+        (
+            i,
+            item.get("사건명", ""),
+            (detail.get("판시사항") or "")[:_EXCERPT_CHARS],
+        )
+        for i, (item, detail) in enumerate(zip(items, details))
+    ]
     try:
         completion = await get_openai_client().chat.completions.parse(
             model=settings.OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": prompt.SYSTEM},
+                {"role": "system", "content": rerank_prompt.SYSTEM},
                 {
                     "role": "user",
-                    "content": prompt.build_user_prompt(
+                    "content": rerank_prompt.build_user_prompt(
+                        req.query, req.case_context, candidates
+                    ),
+                },
+            ],
+            response_format=RerankDraft,
+        )
+        draft = completion.choices[0].message.parsed
+        score_map = {s.id: s.relevance for s in draft.scores} if draft else {}
+    except Exception:
+        logger.exception("판례 예선 채점 실패 — 검색 순서로 폴백")
+        score_map = {}
+    return _ranked_indices(len(items), score_map)
+
+
+async def _make_card(
+    req: SearchRequest, item: dict, detail: dict, relevance: int
+) -> CaseCard:
+    """본선 — 예선을 통과한 판례의 참고 포인트를 생성해 카드로 만든다."""
+    serial_id = str(item.get("판례일련번호", ""))
+    name = item.get("사건명", "")
+    note = "AI 요약에 실패했습니다."
+    try:
+        completion = await get_openai_client().chat.completions.parse(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": note_prompt.SYSTEM},
+                {
+                    "role": "user",
+                    "content": note_prompt.build_user_prompt(
                         req.query,
                         req.case_context,
                         name,
@@ -83,14 +131,13 @@ async def _score_case(req: SearchRequest, item: dict, detail: dict) -> CaseCard:
                     ),
                 },
             ],
-            response_format=RelevanceDraft,
+            response_format=NoteDraft,
         )
         draft = completion.choices[0].message.parsed
         if draft:
-            relevance = max(0, min(100, draft.relevance))
             note = draft.reference_note
     except Exception:
-        logger.exception("판례 관련도 산출 실패 (serial=%s)", serial_id)
+        logger.exception("판례 참고 포인트 생성 실패 (serial=%s)", serial_id)
 
     return CaseCard(
         serial_id=serial_id,
@@ -107,24 +154,25 @@ async def _score_case(req: SearchRequest, item: dict, detail: dict) -> CaseCard:
 
 async def search_cases(req: SearchRequest) -> SearchResponse:
     async with httpx.AsyncClient() as http:
-        total, items = await client.search_precedents(http, req.query)
+        total, items = await client.search_precedents(
+            http, req.query, display=_CANDIDATES
+        )
 
         if req.category:
             label = _CATEGORY_LABELS[req.category]
             items = [i for i in items if label in (i.get("사건종류명") or "")]
+        items = items[:_CANDIDATES]
 
-        top_items = items[: req.limit]
-
-        # 본문 병렬 조회 (실패한 건은 빈 본문으로 계속 진행)
+        # 후보 전체 본문 병렬 조회 (실패한 건은 빈 본문으로 계속 진행)
         detail_results = await asyncio.gather(
             *(
                 client.fetch_precedent_detail(http, str(i["판례일련번호"]))
-                for i in top_items
+                for i in items
             ),
             return_exceptions=True,
         )
     details: list[dict] = []
-    for i, d in zip(top_items, detail_results):
+    for i, d in zip(items, detail_results):
         if isinstance(d, BaseException):
             logger.warning(
                 "판례 본문 조회 실패 (serial=%s): %s", i.get("판례일련번호"), d
@@ -132,16 +180,22 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
             d = {}
         details.append(d)
 
-    # LLM 관련도 산출 병렬 실행
+    # [예선] 일괄 채점 → 상위 limit 건 선발
+    ranked = await _rerank(req, items, details)
+    finalists = ranked[: req.limit]
+
+    # [본선] 참고 포인트 병렬 생성
     semaphore = asyncio.Semaphore(_CONCURRENCY)
 
-    async def _bounded(item: dict, detail: dict) -> CaseCard:
+    async def _bounded(idx: int, score: int) -> CaseCard:
         async with semaphore:
-            return await _score_case(req, item, detail)
+            return await _make_card(req, items[idx], details[idx], score)
 
-    cards = await asyncio.gather(*(_bounded(i, d) for i, d in zip(top_items, details)))
-    cards = sorted(cards, key=lambda c: -c.relevance)
+    cards = await asyncio.gather(*(_bounded(i, s) for i, s in finalists))
 
-    statutes = _aggregate_statutes([d.get("참조조문", "") for d in details])
+    # 관련 법령은 본선 진출작 기준으로 집계 (무관한 판례의 조문 배제)
+    statutes = _aggregate_statutes(
+        [details[i].get("참조조문", "") for i, _ in finalists]
+    )
 
     return SearchResponse(total=total, cases=list(cards), statutes=statutes)
