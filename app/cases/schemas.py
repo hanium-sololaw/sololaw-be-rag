@@ -71,8 +71,20 @@ class SearchResponse(BaseModel):
     statutes: list[RelatedStatute] = Field(description="관련 법령 (인용 횟수순)")
 
 
-class RelevanceDraft(BaseModel):
-    """LLM 관련도 산출 출력 (structured output 강제용)."""
+class CandidateScore(BaseModel):
+    """예선 채점 결과 한 건."""
 
+    id: int
     relevance: int
+
+
+class RerankDraft(BaseModel):
+    """LLM 예선 일괄 채점 출력 (structured output 강제용)."""
+
+    scores: list[CandidateScore]
+
+
+class NoteDraft(BaseModel):
+    """LLM 참고 포인트 요약 출력 (structured output 강제용, 본선)."""
+
     reference_note: str
