@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CaseCategory(str, Enum):
@@ -32,6 +32,14 @@ class SearchRequest(BaseModel):
     limit: int = Field(
         5, ge=1, le=10, description="AI 분석해 반환할 판례 수 (기본 5, 최대 10)"
     )
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _blank_category_as_none(cls, v):
+        """빈 문자열·공백 category 는 전체(미지정)로 취급 — 프론트 select 빈값 대응."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
 
 class CaseCard(BaseModel):
