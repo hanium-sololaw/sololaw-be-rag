@@ -4,15 +4,15 @@
 스트리밍 파이프라인을 공유한다. 응답은 SSE(text/event-stream).
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.documents import service
+from app.documents import analyzer, service
 from app.documents.schemas.application import ApplicationInput
 from app.documents.schemas.brief import BriefInput
 from app.documents.schemas.common import DocumentType, DocumentTypeInfo
 from app.documents.schemas.complaint import ComplaintInput
-from app.documents.schemas.evidence_list import EvidenceListInput
+from app.documents.schemas.evidence_list import AnalyzeResponse, EvidenceListInput
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -88,6 +88,34 @@ async def generate_evidence_list(req: EvidenceListInput):
         service.stream_document(DocumentType.EVIDENCE_LIST, req.model_dump()),
         media_type=SSE_MEDIA,
     )
+
+
+@router.post(
+    "/evidence-list/analyze",
+    response_model=AnalyzeResponse,
+    summary="증거 파일 자동 분석",
+    description="업로드한 증거 파일을 AI 가 읽고 서증명·작성일·입증취지를 분류해 "
+    "EvidenceItem 리스트로 반환한다. 사용자가 결과를 확인·정렬한 뒤 "
+    "evidence-list/generate 의 evidence_items 로 전달하는 흐름.\n\n"
+    "- 지원 형식: PDF, JPG, PNG, TXT — 카카오톡 내보내기 등\n"
+    "- 제한: 파일당 10MB, 요청당 최대 10개\n"
+    "- 텍스트 없는 스캔본 PDF 미지원 — 해당 파일만 success=false 로 반환\n"
+    "- 일부 파일이 실패해도 나머지는 정상 분석 (부분 실패 허용)\n"
+    "- 파일은 저장하지 않고 분석 후 폐기",
+)
+async def analyze_evidence(
+    files: list[UploadFile] = File(..., description="증거 파일들"),
+    case_context: str | None = Form(
+        None,
+        description="사건 맥락 — 입증취지 제안 정확도 향상 (예: 임대차 보증금 반환 사건)",
+    ),
+):
+    if len(files) > analyzer.MAX_FILES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"파일은 최대 {analyzer.MAX_FILES}개까지 업로드할 수 있습니다.",
+        )
+    return await analyzer.analyze_files(files, case_context)
 
 
 @router.post(
