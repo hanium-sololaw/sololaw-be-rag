@@ -72,3 +72,32 @@ class EvidenceListSections(BaseModel):
     )
     note: str = Field("", description="비고 (원본 소지·제출 예정 문구)")
     court: str = Field("", description="관할법원 (○○법원 귀중)")
+
+
+# --- 증거 파일 자동 분석 (analyze) ---
+
+
+class EvidenceDraft(BaseModel):
+    """LLM 분류 출력 (structured output 강제용). EvidenceItem 과 동일 3필드."""
+
+    name: str
+    date: str | None
+    purpose: str | None
+
+
+class AnalyzedEvidence(BaseModel):
+    """파일 한 개의 분석 결과."""
+
+    filename: str = Field(description="업로드한 파일 이름 (프론트 매핑용)")
+    success: bool = Field(description="분석 성공 여부")
+    item: EvidenceItem | None = Field(
+        None,
+        description="성공 시 분류 결과 — generate 의 evidence_items 에 그대로 사용",
+    )
+    error: str | None = Field(None, description="실패 시 사유")
+
+
+class AnalyzeResponse(BaseModel):
+    """증거 파일 분석 응답. 업로드 순서 유지."""
+
+    items: list[AnalyzedEvidence]
