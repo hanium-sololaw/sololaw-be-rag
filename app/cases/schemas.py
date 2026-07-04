@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CaseCategory(str, Enum):
@@ -14,23 +14,25 @@ class CaseCategory(str, Enum):
     FAMILY = "family"  # 가사
 
 
-class SearchRequest(BaseModel):
-    """판례 검색 요청."""
+class _SearchBase(BaseModel):
+    """검색·통계 공통 입력 — query 또는 case_context 중 하나는 필수."""
 
-    query: str = Field(description="검색 키워드", examples=["임대차 보증금 반환"])
+    query: str | None = Field(
+        None,
+        description="검색 키워드 (키워드 검색 탭). 없으면 case_context 에서 AI 가 추출",
+        examples=["임대차 보증금 반환"],
+    )
     category: CaseCategory | None = Field(
         None,
         description="사건 분야 필터 (civil=민사, criminal=형사, "
-        "administrative=행정, family=가사). 미지정 시 전체",
+        "administrative=행정, family=가사). 미지정·빈값 시 전체. "
+        "내 사건 기반 탭은 프론트가 사건 유형으로 자동 지정 권장",
         examples=["civil"],
     )
     case_context: str | None = Field(
         None,
-        description="진행 중인 사건 맥락 — 관련도·참고 포인트 정확도 향상",
+        description="진행 중인 사건 맥락 (내 사건 기반 탭) — 관련도 산출·키워드 추출에 사용",
         examples=["임대차 계약 종료 후 임대인이 보증금 1,000만원 반환을 거부하는 사건"],
-    )
-    limit: int = Field(
-        5, ge=1, le=10, description="AI 분석해 반환할 판례 수 (기본 5, 최대 10)"
     )
 
     @field_validator("category", mode="before")
@@ -40,6 +42,22 @@ class SearchRequest(BaseModel):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    @model_validator(mode="after")
+    def _require_query_or_context(self):
+        if not (self.query and self.query.strip()) and not (
+            self.case_context and self.case_context.strip()
+        ):
+            raise ValueError("query 또는 case_context 중 하나는 필요합니다.")
+        return self
+
+
+class SearchRequest(_SearchBase):
+    """판례 검색 요청."""
+
+    limit: int = Field(
+        5, ge=1, le=10, description="AI 분석해 반환할 판례 수 (기본 5, 최대 10)"
+    )
 
 
 class CaseCard(BaseModel):
@@ -71,6 +89,9 @@ class SearchResponse(BaseModel):
     statutes: list[RelatedStatute] = Field(description="관련 법령 (인용 횟수순)")
 
 
+# --- LLM structured output 모델 ---
+
+
 class CandidateScore(BaseModel):
     """예선 채점 결과 한 건."""
 
@@ -88,3 +109,9 @@ class NoteDraft(BaseModel):
     """LLM 참고 포인트 요약 출력 (structured output 강제용, 본선)."""
 
     reference_note: str
+
+
+class KeywordsDraft(BaseModel):
+    """LLM 검색 키워드 추출 출력 (structured output 강제용)."""
+
+    keywords: str  # 판례 검색용 키워드 문자열 (예: "임대차 보증금 반환")

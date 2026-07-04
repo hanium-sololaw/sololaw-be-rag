@@ -13,11 +13,13 @@ import re
 import httpx
 
 from app.cases import client
+from app.cases.prompts import keywords as keywords_prompt
 from app.cases.prompts import relevance as note_prompt
 from app.cases.prompts import rerank as rerank_prompt
 from app.cases.schemas import (
     CaseCard,
     CaseCategory,
+    KeywordsDraft,
     NoteDraft,
     RelatedStatute,
     RerankDraft,
@@ -72,6 +74,34 @@ def _ranked_indices(n: int, score_map: dict[int, int]) -> list[tuple[int, int]]:
     """(후보 인덱스, 0~100 보정 점수) 를 점수 내림차순으로 반환. 누락 후보는 0점."""
     scored = [(i, max(0, min(100, score_map.get(i, 0)))) for i in range(n)]
     return sorted(scored, key=lambda x: -x[1])
+
+
+async def resolve_query(query: str | None, case_context: str | None) -> str:
+    """검색 키워드 확정 — query 가 없으면 사건 맥락에서 LLM 으로 추출한다.
+
+    내 사건 기반 탭은 query 없이 case_context 만 보낸다.
+    추출 실패 시 사건 맥락 앞부분으로 폴백 (본문 검색이라 어느 정도 동작).
+    """
+    if query and query.strip():
+        return query.strip()
+    try:
+        completion = await get_openai_client().chat.completions.parse(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": keywords_prompt.SYSTEM},
+                {
+                    "role": "user",
+                    "content": keywords_prompt.build_user_prompt(case_context or ""),
+                },
+            ],
+            response_format=KeywordsDraft,
+        )
+        draft = completion.choices[0].message.parsed
+        if draft and draft.keywords.strip():
+            return draft.keywords.strip()
+    except Exception:
+        logger.exception("검색 키워드 추출 실패 — 사건 맥락 앞부분으로 폴백")
+    return (case_context or "").strip()[:50]
 
 
 async def _rerank(
@@ -153,6 +183,10 @@ async def _make_card(
 
 
 async def search_cases(req: SearchRequest) -> SearchResponse:
+    # 키워드 확정 (내 사건 기반 탭은 case_context 에서 추출)
+    resolved = await resolve_query(req.query, req.case_context)
+    req = req.model_copy(update={"query": resolved})
+
     async with httpx.AsyncClient() as http:
         total, items = await client.search_precedents(
             http, req.query, display=_CANDIDATES
