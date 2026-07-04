@@ -17,6 +17,9 @@ _TIMEOUT = 10.0
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
+# 판례 전문에서 주문 섹션 발췌 ("주 문 ... 이 유" 구조)
+_ORDER_RE = re.compile(r"주\s*문(.*?)(?:이\s*유|청\s*구\s*취\s*지|$)", re.S)
+
 
 class LawApiError(Exception):
     """국가법령정보센터 API 호출 실패."""
@@ -24,6 +27,13 @@ class LawApiError(Exception):
 
 def _strip_html(text: str) -> str:
     return _TAG_RE.sub("", text).strip()
+
+
+def _extract_order(content: str) -> str:
+    """판례 전문에서 주문 부분을 발췌한다 (승패 판정의 최우선 근거)."""
+    cleaned = content.replace("【", " ").replace("】", " ")
+    m = _ORDER_RE.search(cleaned)
+    return m.group(1).strip()[:300] if m else ""
 
 
 def _ensure_key() -> str:
@@ -112,6 +122,7 @@ async def fetch_precedent_detail(client: httpx.AsyncClient, serial_id: str) -> d
         "판시사항": _strip_html(body.get("판시사항") or ""),
         "판결요지": _strip_html(body.get("판결요지") or ""),
         "참조조문": _strip_html(body.get("참조조문") or ""),
+        "주문": _extract_order(_strip_html(body.get("판례내용") or "")),
     }
 
 
