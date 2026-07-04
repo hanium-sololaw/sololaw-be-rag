@@ -1,6 +1,6 @@
 # CLAUDE.md — sololaw-be-rag (FastAPI AI 서버)
 
-> 상태: 문서 생성 도메인(`app/documents/`) 구현·배포 완료, CI/CD 운영 중. 판례 검색·증거 분석 도메인은 미착수. `(TBD)` 항목은 변경될 수 있음.
+> 상태: 문서 생성(`app/documents/`)·판례 검색(`app/cases/`) 도메인 구현·배포 완료, CI/CD 운영 중. 증거 분석 도메인은 미착수. `(TBD)` 항목은 변경될 수 있음.
 
 ## 프로젝트 개요
 나홀로 소송(변호사 없이 진행하는 민사소송)을 돕는 AI Agent의 **FastAPI 기반 AI 추론 서버**.
@@ -24,6 +24,7 @@
 - AI/ML: LangChain, LangGraph (도입 예정)
 - LLM: **OpenAI API** — 기본 모델 gpt-4o, `OPENAI_MODEL` 설정으로 교체 가능
 - RAG: 벡터스토어 (FAISS 또는 pgvector) (TBD)
+- 판례·법령 데이터: **국가법령정보센터 Open API** (law.go.kr) — 인증키 `LAW_API_KEY`(OC)
 - Infra: AWS EC2(스프링과 공용 1대), Docker, GitHub Actions — **CI/CD 구축 완료** (자세한 건 `## 배포 / CI-CD`)
 - 설정: pydantic-settings + `.env`
 
@@ -33,7 +34,10 @@
 - `app/documents/` — 문서 생성 도메인 **(구현·배포 완료)**: 소장·준비서면·증거목록·신청서 4종 생성 + 증거 파일 자동 분석. 구성: `router.py`(유형별 엔드포인트), `schemas/`(유형별 입력·출력 스키마), `service.py`(공용 SSE 파이프라인·섹션 파싱), `registry.py`(유형→생성기 매핑), `generators/`(유형별 OpenAI 스트리밍), `prompts/`(유형별 프롬프트), `analyzer.py`(증거 파일 분석 — generate 와 독립 흐름). **새 문서 유형 = schemas/·generators/·prompts/에 같은 이름 파일 추가 + registry 한 줄 등록**, 라우터·서비스는 불변.
 - 생성 엔드포인트 공통 패턴: **SSE 스트리밍** — `delta`(텍스트 조각)×N → `done`(`sections` 구조화 + `raw_text`) / `error`. LLM 이 고정 마크다운 헤더(`## 청구취지` 등)로 쓰도록 강제하고 완료 시 generator 의 `section_map` 으로 파싱한다. 호증 번호 등 결정적 값은 AI 에 맡기지 않고 코드에서 확정한다. 주민등록번호 등 민감정보는 LLM 에 전달하지 않는다.
 - `app/shared/` — 도메인 공통 AI 인프라: `llm.py`(OpenAI 클라이언트, 지연 생성 — 키 없이도 import 가능해야 CI 통과), `extract.py`(업로드 파일 내용 추출 — 이미지 base64·PDF 텍스트·TXT 디코딩). 파일은 저장하지 않는다(무상태, S3 등 저장은 스프링 담당).
-- 향후 도메인: `app/cases/`(판례 검색), `app/evidence/`(증거 분석) 등 동일 패턴.
+- `app/cases/` — 판례 검색 도메인 **(구현·배포 완료)**: 판례 검색 + 승소율 통계. 구성: `router.py`(`/cases/search`·`/cases/statistics`), `schemas.py`, `service.py`(**2단계 랭킹** — 후보 20건을 LLM 1회 예선 일괄 채점 후 상위 limit 건만 본선 분석), `client.py`(국가법령정보센터 API), `statistics.py`(승소율 통계 + 1시간 TTL 인메모리 캐시), `prompts/`(rerank·relevance·keywords·outcome). 프론트 탭 2개(내 사건 기반/키워드 검색)가 같은 API 공용 — `query` 또는 `case_context` 중 하나 필수, 후자만 오면 LLM 이 검색 키워드 추출.
+- 판례 도메인 원칙: 관련 법령은 판례 **참조조문의 정규식 집계**(AI 생성 아님). 승소율은 **검색 표본 기반 참고 지표** — 판단 불가(파기환송 등)는 비율에서 제외, 판단 가능 5건 미만이면 null, 응답의 `disclaimer` 는 프론트 필수 표시. 쟁점별 승소율은 소표본 왜곡으로 제외 확정. 상소심 승패는 상소비용 부담자로 상소인을 추론해 판정.
+- 국가법령정보센터 API 주의: 신청 시 등록한 도메인을 **Referer 로 검증**(`LAW_API_REFERER`, 기본 `https://www.sololaw.site`) — 누락 시 "필수 입력값" 오류로 위장된 거부 응답이 온다.
+- 향후 도메인: `app/evidence/`(증거 분석) 등 동일 패턴.
 - 엔트리는 루트 `main.py` — 각 도메인 `router`를 `/api/v1` 아래로 `include_router`.
 
 배포 관련으로 `docker/`(Dockerfile·docker-compose.yml), `.github/workflows/`(ci.yml·cd.yml), 루트 `.dockerignore`가 추가돼 있다.
