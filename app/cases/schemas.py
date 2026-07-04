@@ -1,6 +1,7 @@
 """판례 검색 도메인 스키마."""
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -89,6 +90,39 @@ class SearchResponse(BaseModel):
     statutes: list[RelatedStatute] = Field(description="관련 법령 (인용 횟수순)")
 
 
+# --- 승소율 통계 (statistics) ---
+
+
+class StatisticsRequest(_SearchBase):
+    """승소율 통계 요청."""
+
+    sample_size: int = Field(
+        30, ge=10, le=50, description="분석할 판례 표본 수 (기본 30, 10~50)"
+    )
+
+
+class OutcomeCounts(BaseModel):
+    """표본의 승패 분포."""
+
+    win: int = Field(description="원고 승소")
+    partial: int = Field(description="원고 일부 승소")
+    lose: int = Field(description="원고 패소")
+    unknown: int = Field(description="판단 불가 (파기환송·정보 부족 등)")
+
+
+class StatisticsResponse(BaseModel):
+    """승소율 통계 응답 — 검색 표본 기반 참고 지표."""
+
+    sample_size: int = Field(description="분석한 판례 표본 수")
+    classified: int = Field(description="승패 판단이 가능했던 건수")
+    plaintiff_win_rate: int | None = Field(
+        description="판단 가능 건 중 원고 승소·일부 승소 비율 %. "
+        "판단 가능 건이 5건 미만이면 소표본 왜곡 방지를 위해 null"
+    )
+    outcomes: OutcomeCounts = Field(description="승패 분포")
+    disclaimer: str = Field(description="면책 문구 — 프론트에서 반드시 함께 표시")
+
+
 # --- LLM structured output 모델 ---
 
 
@@ -115,3 +149,16 @@ class KeywordsDraft(BaseModel):
     """LLM 검색 키워드 추출 출력 (structured output 강제용)."""
 
     keywords: str  # 판례 검색용 키워드 문자열 (예: "임대차 보증금 반환")
+
+
+class OutcomeItem(BaseModel):
+    """LLM 승패 분류 결과 한 건."""
+
+    id: int
+    outcome: Literal["win", "partial", "lose", "unknown"]
+
+
+class OutcomeBatchDraft(BaseModel):
+    """LLM 승패 일괄 분류 출력 (structured output 강제용)."""
+
+    results: list[OutcomeItem]

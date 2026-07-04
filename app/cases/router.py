@@ -2,9 +2,14 @@
 
 from fastapi import APIRouter, HTTPException
 
-from app.cases import service
+from app.cases import service, statistics
 from app.cases.client import LawApiError
-from app.cases.schemas import SearchRequest, SearchResponse
+from app.cases.schemas import (
+    SearchRequest,
+    SearchResponse,
+    StatisticsRequest,
+    StatisticsResponse,
+)
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -40,5 +45,35 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 async def search(req: SearchRequest):
     try:
         return await service.search_cases(req)
+    except LawApiError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@router.post(
+    "/statistics",
+    response_model=StatisticsResponse,
+    summary="유사 판례 승소율 통계",
+    description="검색 표본(최근 공개 판례 최대 50건)의 승패를 AI 가 분류해 원고 승소 "
+    "비율을 산출한다.\n\n"
+    "**탭별 입력 방법 — 판례 검색과 동일 규칙, query 또는 case_context 중 하나는 필수**\n\n"
+    "| 필드 | 내 사건 기반 탭 | 키워드 검색 탭 |\n"
+    "|---|---|---|\n"
+    "| query | 보내지 않음 | 사용자가 입력한 키워드 |\n"
+    "| case_context | 사건 설명 — AI 가 검색 키워드 추출 | 보내지 않음 |\n"
+    "| category | 사건 유형으로 프론트가 자동 지정 | 사용자가 필터에서 선택 |\n"
+    "| sample_size | 동일 — 선택, 기본 30 | 동일 — 선택, 기본 30 |\n\n"
+    "**응답**\n\n"
+    "- **sample_size**: 분석한 표본 수\n"
+    "- **classified**: 승패 판단 가능 건수 — 파기환송 등 판단 불가는 비율에서 제외\n"
+    "- **plaintiff_win_rate**: 판단 가능 건 중 원고 승소·일부 승소 %. "
+    "판단 가능 건 5건 미만이면 null — 소표본 왜곡 방지\n"
+    "- **outcomes**: 승패 분포 (win·partial·lose·unknown)\n"
+    "- **disclaimer**: 면책 문구 — 프론트에서 반드시 함께 표시\n\n"
+    "전국 통계가 아닌 검색 표본 기반 참고 지표이다. 동일 조건 재조회는 1시간 캐시로 "
+    "즉시 응답, 첫 호출은 5~10초 소요.",
+)
+async def get_statistics(req: StatisticsRequest):
+    try:
+        return await statistics.get_statistics(req)
     except LawApiError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
