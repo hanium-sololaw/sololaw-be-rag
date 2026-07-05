@@ -40,6 +40,7 @@ COPY --from=build /app/.venv /app/.venv
 # 애플리케이션 소스 복사
 COPY main.py ./
 COPY app ./app
+COPY scripts ./scripts
 
 RUN chown -R app:app /app
 
