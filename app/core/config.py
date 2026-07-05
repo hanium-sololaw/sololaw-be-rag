@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     ENV: str = "local"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # 판례 임베딩 저장소 (RAG 전용 pgvector). 미설정 시 벡터 검색 비활성
+    VECTOR_DB_URL: str = ""
 
     # 국가법령정보센터 Open API 인증키 (OC, law.go.kr 발급 이메일 ID)
     LAW_API_KEY: str = ""
