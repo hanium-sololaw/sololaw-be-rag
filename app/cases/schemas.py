@@ -71,6 +71,11 @@ class CaseCard(BaseModel):
     decision_date: str = Field(description="선고일자")
     category: str = Field(description="사건종류명 (민사·형사 등)")
     relevance: int = Field(description="사건 맥락 대비 관련도 0~100 (AI 산출)")
+    similarity: int | None = Field(
+        None,
+        description="판례 임베딩 코사인 유사도 % (벡터 검색으로 확보된 후보만, "
+        "'내 사건과 유사한 판례 N%' 게이지용)",
+    )
     reference_note: str = Field(description="이 판례에서 참고할 수 있는 내용 (AI 요약)")
     detail_url: str = Field(description="원문보기 링크 (law.go.kr)")
 

@@ -1,9 +1,10 @@
-"""판례 검색 오케스트레이션 — 2단계 랭킹.
+"""판례 검색 오케스트레이션 — 하이브리드 RAG + 2단계 랭킹.
 
-검색(law.go.kr) → 분야 필터 → 후보 전체 본문 병렬 조회
+키워드 확정 → 후보 확보 [하이브리드: (a) law.go.kr 키워드 검색 + (b) 판례 임베딩
+유사도 검색] → 병합·중복 제거 → 본문 확보(벡터 후보는 코퍼스 프리로드 재사용)
 → [예선] LLM 1회 일괄 관련도 채점 → 상위 limit 건 선발
 → [본선] 참고 포인트 병렬 생성 → 참조조문 집계(관련 법령) → 응답.
-점수의 출처는 예선 하나로 통일한다.
+점수의 출처는 예선 하나로 통일하며, 벡터 저장소 미가용 시 키워드 검색만으로 폴백한다.
 """
 
 import asyncio
@@ -12,7 +13,7 @@ import re
 
 import httpx
 
-from app.cases import client
+from app.cases import client, embedding
 from app.cases.prompts import keywords as keywords_prompt
 from app.cases.prompts import relevance as note_prompt
 from app.cases.prompts import rerank as rerank_prompt
@@ -74,6 +75,49 @@ def _ranked_indices(n: int, score_map: dict[int, int]) -> list[tuple[int, int]]:
     """(후보 인덱스, 0~100 보정 점수) 를 점수 내림차순으로 반환. 누락 후보는 0점."""
     scored = [(i, max(0, min(100, score_map.get(i, 0)))) for i in range(n)]
     return sorted(scored, key=lambda x: -x[1])
+
+
+def _vector_row_to_item(row: dict) -> dict:
+    """벡터 검색 결과를 키워드 검색 item 형태로 정규화한다.
+
+    코퍼스에 본문(판시사항·판결요지·참조조문)이 이미 있으므로 _detail 로
+    프리로드해 law.go.kr 본문 조회를 생략한다.
+    """
+    return {
+        "판례일련번호": row["serial_id"],
+        "사건명": row["name"],
+        "사건번호": row["case_no"],
+        "법원명": row["court"],
+        "선고일자": row["decision_date"],
+        "사건종류명": row["category"],
+        "_similarity": round(row["similarity"] * 100),
+        "_detail": {
+            "판시사항": row["summary"],
+            "판결요지": row["holding"],
+            "참조조문": row["statutes"],
+        },
+    }
+
+
+def _merge_candidates(keyword_items: list[dict], vector_rows: list[dict]) -> list[dict]:
+    """키워드·벡터 후보를 병합한다 — 판례일련번호 기준 중복 제거.
+
+    양쪽에 모두 있는 판례는 키워드 항목을 유지하고 유사도·프리로드만 보강한다.
+    """
+    merged: dict[str, dict] = {}
+    for item in keyword_items:
+        sid = str(item.get("판례일련번호", ""))
+        if sid:
+            merged[sid] = dict(item)
+    for row in vector_rows:
+        sid = str(row["serial_id"])
+        normalized = _vector_row_to_item(row)
+        if sid in merged:
+            merged[sid]["_similarity"] = normalized["_similarity"]
+            merged[sid]["_detail"] = normalized["_detail"]
+        else:
+            merged[sid] = normalized
+    return list(merged.values())
 
 
 async def resolve_query(query: str | None, case_context: str | None) -> str:
@@ -177,6 +221,7 @@ async def _make_card(
         decision_date=str(item.get("선고일자", "")),
         category=item.get("사건종류명", ""),
         relevance=relevance,
+        similarity=item.get("_similarity"),
         reference_note=note,
         detail_url=client.public_detail_url(serial_id),
     )
@@ -186,24 +231,38 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
     # 키워드 확정 (내 사건 기반 탭은 case_context 에서 추출)
     resolved = await resolve_query(req.query, req.case_context)
     req = req.model_copy(update={"query": resolved})
+    label = _CATEGORY_LABELS[req.category] if req.category else None
 
     async with httpx.AsyncClient() as http:
-        total, items = await client.search_precedents(
+        # (a) 키워드 후보 — law.go.kr 실시간 검색 (최신 판례 커버)
+        total, keyword_items = await client.search_precedents(
             http, req.query, display=_CANDIDATES
         )
+        if label:
+            keyword_items = [
+                i for i in keyword_items if label in (i.get("사건종류명") or "")
+            ]
 
-        if req.category:
-            label = _CATEGORY_LABELS[req.category]
-            items = [i for i in items if label in (i.get("사건종류명") or "")]
-        items = items[:_CANDIDATES]
+        # (b) 벡터 후보 — 판례 임베딩 코퍼스 유사도 검색 (용어 불일치 커버)
+        vector_rows: list[dict] = []
+        try:
+            [query_vec] = await embedding.embed_texts([req.query])
+            vector_rows = await embedding.search_similar(
+                query_vec, top_k=_CANDIDATES, category=label
+            )
+        except Exception:
+            logger.warning("벡터 검색 미가용 — 키워드 후보만 사용", exc_info=True)
 
-        # 후보 전체 본문 병렬 조회 (실패한 건은 빈 본문으로 계속 진행)
+        items = _merge_candidates(keyword_items, vector_rows)
+
+        # 본문 확보 — 벡터 후보는 코퍼스 프리로드 사용, 키워드 후보만 API 조회
+        async def _detail_of(item: dict) -> dict:
+            if "_detail" in item:
+                return item["_detail"]
+            return await client.fetch_precedent_detail(http, str(item["판례일련번호"]))
+
         detail_results = await asyncio.gather(
-            *(
-                client.fetch_precedent_detail(http, str(i["판례일련번호"]))
-                for i in items
-            ),
-            return_exceptions=True,
+            *(_detail_of(i) for i in items), return_exceptions=True
         )
     details: list[dict] = []
     for i, d in zip(items, detail_results):
