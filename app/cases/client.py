@@ -58,7 +58,7 @@ def _as_list(value) -> list[dict]:
 
 
 async def search_precedents(
-    client: httpx.AsyncClient, query: str, display: int = 20
+    client: httpx.AsyncClient, query: str, display: int = 20, page: int = 1
 ) -> tuple[int, list[dict]]:
     """판례 목록 검색. (전체 건수, 목록) 반환."""
     params = {
@@ -67,6 +67,7 @@ async def search_precedents(
         "type": "JSON",
         "query": query,
         "display": display,
+        "page": page,
         "search": 2,  # 본문 검색 (1=판례명)
     }
     try:

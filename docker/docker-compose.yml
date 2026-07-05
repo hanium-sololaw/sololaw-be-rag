@@ -12,6 +12,7 @@ services:
 
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       LAW_API_KEY: ${LAW_API_KEY}
+      VECTOR_DB_URL: ${VECTOR_DB_URL:-}
       CORS_ORIGINS: ${CORS_ORIGINS}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -30,6 +31,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  vector-db:
+    image: pgvector/pgvector:pg16
+    container_name: sololaw-rag-vector
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ${VECTOR_DB_PASSWORD:-ragvector}
+      POSTGRES_DB: rag
+      TZ: Asia/Seoul
+    volumes:
+      - vector_data:/var/lib/postgresql/data
+    networks:
+      - sololaw-network
+    restart: unless-stopped
+    mem_limit: 512m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   sololaw-network:
     external: true
+
+volumes:
+  vector_data:
