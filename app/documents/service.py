@@ -8,7 +8,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 
-from app.documents.registry import get_generator
+from app.documents.registry import GENERATORS
 from app.documents.schemas.common import DocumentType, DocumentTypeInfo
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ async def stream_document(doc_type: DocumentType, inputs: dict) -> AsyncIterator
     section_map 으로 구조화해 `done` 이벤트로, 실패 시 `error` 이벤트로 방출한다.
     done 에는 파싱 실패 대비용 원문(raw_text)도 함께 담는다.
     """
-    generator = get_generator(doc_type)
+    generator = GENERATORS[doc_type]
     buffer: list[str] = []
     try:
         async for delta in generator.generate_stream(inputs):

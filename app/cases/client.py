@@ -18,7 +18,7 @@ _TIMEOUT = 10.0
 _TAG_RE = re.compile(r"<[^>]+>")
 
 # 판례 전문에서 주문 섹션 발췌 ("주 문 ... 이 유" 구조)
-_ORDER_RE = re.compile(r"주\s*문(.*?)(?:이\s*유|청\s*구\s*취\s*지|$)", re.S)
+_ORDER_RE = re.compile(r"주\s*문(.*?)(?:이\s*유|청\s*구\s*취\s*지|$)", re.DOTALL)
 
 
 class LawApiError(Exception):
@@ -79,8 +79,6 @@ async def search_precedents(
         )
         res.raise_for_status()
         data = res.json()
-    except LawApiError:
-        raise
     except Exception as e:
         raise LawApiError("판례 검색 API 호출에 실패했습니다.") from e
 
@@ -111,8 +109,6 @@ async def fetch_precedent_detail(client: httpx.AsyncClient, serial_id: str) -> d
         )
         res.raise_for_status()
         data = res.json()
-    except LawApiError:
-        raise
     except Exception as e:
         raise LawApiError("판례 본문 API 호출에 실패했습니다.") from e
 

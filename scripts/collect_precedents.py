@@ -84,7 +84,7 @@ async def collect(seeds: list[str], pages: int, display: int, delay: float) -> N
             print(f"[시드] {seed}")
             for page in range(1, pages + 1):
                 try:
-                    total, items = await client.search_precedents(
+                    _, items = await client.search_precedents(
                         http, seed, display=display, page=page
                     )
                 except client.LawApiError as e:
