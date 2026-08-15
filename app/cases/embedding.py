@@ -26,10 +26,6 @@ class VectorDbError(Exception):
     """벡터 저장소 사용 불가 (미설정·접속 실패)."""
 
 
-async def _init_conn(conn: asyncpg.Connection) -> None:
-    await register_vector(conn)
-
-
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if not settings.VECTOR_DB_URL:
@@ -43,7 +39,7 @@ async def get_pool() -> asyncpg.Pool:
             finally:
                 await setup.close()
             _pool = await asyncpg.create_pool(
-                settings.VECTOR_DB_URL, min_size=1, max_size=5, init=_init_conn
+                settings.VECTOR_DB_URL, min_size=1, max_size=5, init=register_vector
             )
         except Exception as e:
             raise VectorDbError("벡터 저장소에 접속할 수 없습니다.") from e

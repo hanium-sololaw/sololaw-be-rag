@@ -71,12 +71,6 @@ def _aggregate_statutes(texts: list[str], top: int = 5) -> list[RelatedStatute]:
     return [RelatedStatute(name=n, count=c) for n, c in ranked[:top]]
 
 
-def _ranked_indices(n: int, score_map: dict[int, int]) -> list[tuple[int, int]]:
-    """(후보 인덱스, 0~100 보정 점수) 를 점수 내림차순으로 반환. 누락 후보는 0점."""
-    scored = [(i, max(0, min(100, score_map.get(i, 0)))) for i in range(n)]
-    return sorted(scored, key=lambda x: -x[1])
-
-
 def _vector_row_to_item(row: dict) -> dict:
     """벡터 검색 결과를 키워드 검색 item 형태로 정규화한다.
 
@@ -179,7 +173,9 @@ async def _rerank(
     except Exception:
         logger.exception("판례 예선 채점 실패 — 검색 순서로 폴백")
         score_map = {}
-    return _ranked_indices(len(items), score_map)
+    # (후보 인덱스, 0~100 보정 점수) 를 점수 내림차순으로. 누락 후보는 0점.
+    scored = [(i, max(0, min(100, score_map.get(i, 0)))) for i in range(len(items))]
+    return sorted(scored, key=lambda x: -x[1])
 
 
 async def _make_card(

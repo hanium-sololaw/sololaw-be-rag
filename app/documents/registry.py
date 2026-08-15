@@ -16,7 +16,3 @@ GENERATORS: dict[DocumentType, BaseGenerator] = {
     DocumentType.EVIDENCE_LIST: EvidenceListGenerator(),
     DocumentType.APPLICATION: ApplicationGenerator(),
 }
-
-
-def get_generator(doc_type: DocumentType) -> BaseGenerator:
-    return GENERATORS[doc_type]
