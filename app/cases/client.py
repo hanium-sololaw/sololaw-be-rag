@@ -79,8 +79,6 @@ async def search_precedents(
         )
         res.raise_for_status()
         data = res.json()
-    except LawApiError:
-        raise
     except Exception as e:
         raise LawApiError("판례 검색 API 호출에 실패했습니다.") from e
 
@@ -111,8 +109,6 @@ async def fetch_precedent_detail(client: httpx.AsyncClient, serial_id: str) -> d
         )
         res.raise_for_status()
         data = res.json()
-    except LawApiError:
-        raise
     except Exception as e:
         raise LawApiError("판례 본문 API 호출에 실패했습니다.") from e
 

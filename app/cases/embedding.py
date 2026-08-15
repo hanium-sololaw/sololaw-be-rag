@@ -45,8 +45,6 @@ async def get_pool() -> asyncpg.Pool:
             _pool = await asyncpg.create_pool(
                 settings.VECTOR_DB_URL, min_size=1, max_size=5, init=_init_conn
             )
-        except VectorDbError:
-            raise
         except Exception as e:
             raise VectorDbError("벡터 저장소에 접속할 수 없습니다.") from e
     return _pool
