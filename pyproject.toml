@@ -15,3 +15,14 @@ dependencies = [
     "asyncpg>=0.31.0",
     "pgvector>=0.4.2",
 ]
+
+# FastAPI 는 File()·Form()·Depends() 를 인자 기본값으로 쓰는 게 정상 관용구다.
+# B008(인자 기본값에서 함수 호출 금지) 대상에서 제외한다.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Query",
+]
