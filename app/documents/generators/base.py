@@ -6,13 +6,10 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from app.documents.schemas.common import DocumentType
-
 
 class BaseGenerator(ABC):
     """문서 유형별 생성기 베이스."""
 
-    doc_type: DocumentType
     # 출력 마크다운 헤더 → 구조화 필드명. service 가 완료 시 섹션 파싱에 사용.
     section_map: dict[str, str] = {}
 

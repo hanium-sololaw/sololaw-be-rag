@@ -6,12 +6,10 @@ from app.core.config import settings
 from app.documents.generators.base import BaseGenerator
 from app.documents.prompts import application as prompt
 from app.documents.schemas.application import ApplicationInput
-from app.documents.schemas.common import DocumentType
 from app.shared.llm import get_openai_client
 
 
 class ApplicationGenerator(BaseGenerator):
-    doc_type = DocumentType.APPLICATION
     section_map = prompt.SECTION_MAP
 
     async def generate_stream(self, inputs: dict) -> AsyncIterator[str]:

@@ -5,13 +5,11 @@ from collections.abc import AsyncIterator
 from app.core.config import settings
 from app.documents.generators.base import BaseGenerator
 from app.documents.prompts import complaint as prompt
-from app.documents.schemas.common import DocumentType
 from app.documents.schemas.complaint import ComplaintInput
 from app.shared.llm import get_openai_client
 
 
 class ComplaintGenerator(BaseGenerator):
-    doc_type = DocumentType.COMPLAINT
     section_map = prompt.SECTION_MAP
 
     async def generate_stream(self, inputs: dict) -> AsyncIterator[str]:
