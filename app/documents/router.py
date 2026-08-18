@@ -46,7 +46,24 @@ def get_document_types():
     "/complaint/generate",
     summary="소장 자동 생성",
     response_description="SSE 스트림 (delta*N → done)",
-    description="입력 정보(법원·소송유형·당사자·청구원인 등)를 법원 제출용 소장으로 변환한다.\n\n"
+    description="정보입력 위저드 1~6단계 결과를 한 번에 받아 법원 제출용 소장으로 변환한다.\n\n"
+    "**소송 유형 5종** (`lawsuit_type`) — `deposit_return`(임대차보증금 반환), "
+    "`loan_return`(대여금 반환), `wage_claim`(임금체불 청구), `damages`(손해배상), "
+    "`building_surrender`(건물명도). 건물명도만 청구취지 1항이 금전 지급이 아니라 "
+    "**건물 인도**로 작성되고, 미납 차임이 있으면 2항의 금전 청구로 이어진다.\n\n"
+    "**단계별 대응 필드**\n"
+    "- 1단계(어느 법원에 얼마) → `court` · `claim_type` · `valuation_type` · "
+    "`claim_amount` · `object_value`\n"
+    "- 2단계(누가 누구에게) → `plaintiffs` · `defendants`. 법인 대표자·법정대리인은 "
+    "`representative`, 송달 주소·팩스는 `service_address` · `fax`\n"
+    "- 3~4단계(유형별 사실관계) → `facts` 에 `{화면 항목: 답}` 을 그대로 담는다. "
+    "소송 유형마다 항목이 달라 스키마를 고정하지 않는다. 자유서술은 `cause_text`\n"
+    "- 5단계(요구·독촉) → `partial_repaid` · `demand_method` · `demand_date` · "
+    "`response_text`. `demand_date`(최고일)는 지연손해금 기산일 판단에 쓰인다\n"
+    "- 6단계(가지고 있는 자료) → `attachments` 라벨 목록이 입증방법(갑 호증)이 된다. "
+    "파일 업로드는 `POST /documents/evidence/analyze` 별도 호출\n\n"
+    "인지대·송달료 계산은 본 서버 범위 밖(스프링 담당)이며, 주민등록번호는 LLM 에 "
+    "전달되지 않는다.\n\n"
     "**done** 이벤트의 **sections** 는 사건명, 소송목적의 값, 당사자, 청구취지, 청구원인, "
     "입증방법, 첨부서류, 관할법원 8개 필드 (**ComplaintSections**).\n" + _SSE_DOC,
 )
