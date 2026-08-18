@@ -10,11 +10,13 @@
 import asyncio
 import logging
 import re
+import time
 
 import httpx
 
 from app.cases import client, embedding
 from app.cases.prompts import keywords as keywords_prompt
+from app.cases.prompts import outcome as outcome_prompt
 from app.cases.prompts import relevance as note_prompt
 from app.cases.prompts import rerank as rerank_prompt
 from app.cases.schemas import (
@@ -22,10 +24,13 @@ from app.cases.schemas import (
     CaseCategory,
     KeywordsDraft,
     NoteDraft,
+    OutcomeBatchDraft,
+    OutcomeCounts,
     RelatedStatute,
     RerankDraft,
     SearchRequest,
     SearchResponse,
+    StatisticsResponse,
 )
 from app.core.config import settings
 from app.shared.llm import get_openai_client
@@ -35,14 +40,45 @@ logger = logging.getLogger(__name__)
 _CANDIDATES = 20  # 예선 후보 수 (law.go.kr 조회 건수)
 _EXCERPT_CHARS = 300  # 예선용 판시사항 발췌 길이
 _CONCURRENCY = 5  # 동시 LLM 호출 제한 (본선)
+_BATCH = 25  # 승패 분류 LLM 배치 1회당 판례 수
+_HOLDING_EXCERPT = 200  # 승패 분류용 판결요지 발췌 길이
+_OVERSAMPLE = 3  # 통계 표본은 카테고리 필터로 줄어드니 이 배수만큼 넉넉히 받는다
+_MIN_CLASSIFIED = 5  # 승소율 산출 최소 판단 건수 — 미만이면 null (소표본 왜곡 방지)
+_TTL_SECONDS = 3600  # 통계 캐시 유효 시간 1시간
 
-# 분야 필터 → 국가법령정보센터 사건종류명 매칭 문자열
-_CATEGORY_LABELS: dict[CaseCategory, str] = {
-    CaseCategory.CIVIL: "민사",
-    CaseCategory.CRIMINAL: "형사",
-    CaseCategory.ADMINISTRATIVE: "행정",
-    CaseCategory.FAMILY: "가사",
+DISCLAIMER = (
+    "검색된 공개 판례 표본의 통계적 경향이며 실제 재판 결과를 예측하거나 "
+    "보장하지 않습니다. 구체적인 결과는 사건의 사실관계에 따라 달라질 수 있습니다."
+)
+
+# {캐시키: (저장 시각, 응답)} — 프로세스 재시작 시 초기화되는 인메모리 캐시
+_stats_cache: dict[str, tuple[float, StatisticsResponse]] = {}
+
+# 필터 칩 → (사건종류명 매칭 문자열, 사건명 키워드).
+# 대여금·임대차는 사건종류명이 아니라 민사 안의 주제라 사건명으로 한 번 더 좁힌다.
+_CATEGORY_FILTERS: dict[CaseCategory, tuple[str, tuple[str, ...]]] = {
+    CaseCategory.CIVIL: ("민사", ()),
+    CaseCategory.LOAN: ("민사", ("대여금", "차용", "소비대차", "약정금")),
+    CaseCategory.LEASE: ("민사", ("임대차", "임차", "보증금", "명도", "건물인도")),
 }
+
+
+def category_label(category: CaseCategory | None) -> str | None:
+    """필터 칩의 사건종류명 부분 — 벡터 검색의 SQL 필터에 쓴다."""
+    return _CATEGORY_FILTERS[category][0] if category else None
+
+
+def matches_category(
+    category: CaseCategory | None, case_type: str | None, case_name: str | None
+) -> bool:
+    """판례 한 건이 필터 칩에 해당하는지 — 사건종류명 + 사건명 키워드."""
+    if not category:
+        return True
+    label, keywords = _CATEGORY_FILTERS[category]
+    if label not in (case_type or ""):
+        return False
+    return not keywords or any(k in (case_name or "") for k in keywords)
+
 
 # 참조조문에서 "법명 제N조(의M)" 추출. 법명 생략 시 직전 법명을 승계.
 # 법명은 띄어쓰기 포함 가능 (예: 상가건물 임대차보호법)
@@ -52,11 +88,17 @@ _STATUTE_RE = re.compile(
 )
 
 
-def _aggregate_statutes(texts: list[str], top: int = 5) -> list[RelatedStatute]:
-    """판례별 참조조문 텍스트에서 조문을 추출해 판례 단위로 집계한다."""
-    counts: dict[str, int] = {}
+def _aggregate_statutes(
+    texts: list[str], top: int = 5
+) -> list[tuple[tuple[str, str, str], int]]:
+    """판례별 참조조문 텍스트에서 조문을 추출해 판례 단위로 집계한다.
+
+    ((법령명, 조, 가지번호), 인용 판례 수) 를 인용 많은 순으로 돌려준다.
+    조문 제목 조회에 법령명·조 번호가 따로 필요해 문자열로 합치지 않는다.
+    """
+    counts: dict[tuple[str, str, str], int] = {}
     for text in texts:
-        found: set[str] = set()
+        found: set[tuple[str, str, str]] = set()
         current_law: str | None = None
         for m in _STATUTE_RE.finditer(text):
             law, jo, ui = m.group(1), m.group(2), m.group(3) or ""
@@ -64,11 +106,29 @@ def _aggregate_statutes(texts: list[str], top: int = 5) -> list[RelatedStatute]:
                 current_law = law
             if not current_law:
                 continue
-            found.add(f"{current_law} 제{jo}조{ui}")
-        for name in found:
-            counts[name] = counts.get(name, 0) + 1
+            found.add((current_law, jo, ui))
+        for key in found:
+            counts[key] = counts.get(key, 0) + 1
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [RelatedStatute(name=n, count=c) for n, c in ranked[:top]]
+    return ranked[:top]
+
+
+async def _build_statutes(
+    http: httpx.AsyncClient, ranked: list[tuple[tuple[str, str, str], int]]
+) -> list[RelatedStatute]:
+    """집계된 조문에 제목을 붙여 응답 모델로 만든다. 제목 조회는 병렬·실패 허용."""
+    titles = await asyncio.gather(
+        *(client.fetch_statute_title(http, law, jo, ui) for (law, jo, ui), _ in ranked),
+        return_exceptions=True,
+    )
+    return [
+        RelatedStatute(
+            name=f"{law} 제{jo}조{ui}",
+            title=None if isinstance(t, BaseException) else t,
+            count=count,
+        )
+        for ((law, jo, ui), count), t in zip(ranked, titles)
+    ]
 
 
 def _vector_row_to_item(row: dict) -> dict:
@@ -112,6 +172,119 @@ def _merge_candidates(keyword_items: list[dict], vector_rows: list[dict]) -> lis
         else:
             merged[sid] = normalized
     return list(merged.values())
+
+
+async def classify_outcomes(
+    candidates: list[tuple[int, str, str, str, str]],
+) -> dict[int, str]:
+    """승패를 배치 단위로 병렬 분류해 {후보 인덱스: outcome} 으로 합친다.
+
+    후보는 (id, 사건명, 법원명, 주문, 판결요지 발췌). 판례 검색의 카드 배지와
+    승소율 통계가 같은 기준을 쓰도록 두 흐름이 이 함수를 공유한다.
+    """
+    chunks = [candidates[i : i + _BATCH] for i in range(0, len(candidates), _BATCH)]
+
+    async def _one(chunk: list) -> dict[int, str]:
+        try:
+            completion = await get_openai_client().chat.completions.parse(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": outcome_prompt.SYSTEM},
+                    {
+                        "role": "user",
+                        "content": outcome_prompt.build_user_prompt(chunk),
+                    },
+                ],
+                response_format=OutcomeBatchDraft,
+            )
+            draft = completion.choices[0].message.parsed
+            return {r.id: r.outcome for r in draft.results} if draft else {}
+        except Exception:
+            logger.exception("판례 승패 분류 실패 — 해당 배치는 판단 불가 처리")
+            return {}
+
+    results = await asyncio.gather(*(_one(c) for c in chunks))
+    merged: dict[int, str] = {}
+    for m in results:
+        merged.update(m)
+    return merged
+
+
+async def compute_statistics(
+    query: str, category: CaseCategory | None, sample_size: int
+) -> StatisticsResponse:
+    """검색 표본의 승패를 분류해 원고 승소 비율을 낸다.
+
+    카드보다 넓은 표본을 따로 뽑는다 — 카드는 관련도 상위 몇 건이지만
+    통계는 경향을 보려면 표본이 커야 한다.
+    전국 통계가 아닌 표본 기반 참고 지표이므로 면책 문구를 함께 돌려준다.
+    """
+    cache_key = f"{query}|{category.value if category else ''}|{sample_size}"
+    now = time.monotonic()
+    hit = _stats_cache.get(cache_key)
+    if hit and now - hit[0] < _TTL_SECONDS:
+        return hit[1]
+
+    async with httpx.AsyncClient() as http:
+        # 카테고리 필터로 상당수가 걸러지므로 넉넉히 받아 필터 후 자른다.
+        # 딱 sample_size 만 받으면 표본이 한 자릿수로 줄어 승소율이 null 이 된다.
+        _, items = await client.search_precedents(
+            http, query, display=min(sample_size * _OVERSAMPLE, 100)
+        )
+        items = [
+            i
+            for i in items
+            if matches_category(category, i.get("사건종류명"), i.get("사건명"))
+        ][:sample_size]
+
+        detail_results = await asyncio.gather(
+            *(
+                client.fetch_precedent_detail(http, str(i["판례일련번호"]))
+                for i in items
+            ),
+            return_exceptions=True,
+        )
+
+    candidates: list[tuple[int, str, str, str, str]] = []
+    for idx, (item, d) in enumerate(zip(items, detail_results)):
+        if isinstance(d, BaseException):
+            logger.warning(
+                "판례 본문 조회 실패 (serial=%s): %s", item.get("판례일련번호"), d
+            )
+            d = {}
+        candidates.append(
+            (
+                idx,
+                item.get("사건명", ""),
+                item.get("법원명", ""),
+                d.get("주문", ""),
+                (d.get("판결요지") or "")[:_HOLDING_EXCERPT],
+            )
+        )
+
+    outcome_map = await classify_outcomes(candidates)
+
+    counts = {"win": 0, "partial": 0, "lose": 0, "unknown": 0}
+    for i in range(len(candidates)):
+        counts[outcome_map.get(i, "unknown")] += 1
+    classified = counts["win"] + counts["partial"] + counts["lose"]
+    # 일부 승소도 원고가 청구를 관철한 것이므로 승소로 센다. 민사는 일부 인용이
+    # 다수라, 전부 승소만 세면 실제보다 크게 낮은 수치가 나온다.
+    win_rate = (
+        round((counts["win"] + counts["partial"]) / classified * 100)
+        if classified >= _MIN_CLASSIFIED
+        else None
+    )
+
+    resp = StatisticsResponse(
+        sample_size=len(candidates),
+        classified=classified,
+        plaintiff_win_rate=win_rate,
+        outcomes=OutcomeCounts(**counts),
+        disclaimer=DISCLAIMER,
+    )
+    _stats_cache[cache_key] = (now, resp)
+    return resp
 
 
 async def resolve_query(query: str | None, case_context: str | None) -> str:
@@ -179,7 +352,7 @@ async def _rerank(
 
 
 async def _make_card(
-    req: SearchRequest, item: dict, detail: dict, relevance: int
+    req: SearchRequest, item: dict, detail: dict, relevance: int, outcome: str
 ) -> CaseCard:
     """본선 — 예선을 통과한 판례의 참고 포인트를 생성해 카드로 만든다."""
     serial_id = str(item.get("판례일련번호", ""))
@@ -217,6 +390,7 @@ async def _make_card(
         decision_date=str(item.get("선고일자", "")),
         category=item.get("사건종류명", ""),
         relevance=relevance,
+        outcome=outcome,
         similarity=item.get("_similarity"),
         reference_note=note,
         detail_url=client.public_detail_url(serial_id),
@@ -224,28 +398,40 @@ async def _make_card(
 
 
 async def search_cases(req: SearchRequest) -> SearchResponse:
-    # 키워드 확정 (내 사건 기반 탭은 case_context 에서 추출)
+    # 키워드 확정 (내 사건 기반 탭은 case_context 에서 추출).
+    # 검색과 통계가 이 결과를 공유하므로 추출은 한 번만 돈다.
     resolved = await resolve_query(req.query, req.case_context)
     req = req.model_copy(update={"query": resolved})
-    label = _CATEGORY_LABELS[req.category] if req.category else None
+
+    # 통계는 검색과 독립이라 먼저 띄워두고 마지막에 거둔다 (벽시계 시간 절약).
+    stats_task = asyncio.create_task(
+        compute_statistics(resolved, req.category, req.sample_size)
+    )
 
     async with httpx.AsyncClient() as http:
         # (a) 키워드 후보 — law.go.kr 실시간 검색 (최신 판례 커버)
         total, keyword_items = await client.search_precedents(
             http, req.query, display=_CANDIDATES
         )
-        if label:
-            keyword_items = [
-                i for i in keyword_items if label in (i.get("사건종류명") or "")
-            ]
+        keyword_items = [
+            i
+            for i in keyword_items
+            if matches_category(req.category, i.get("사건종류명"), i.get("사건명"))
+        ]
 
         # (b) 벡터 후보 — 판례 임베딩 코퍼스 유사도 검색 (용어 불일치 커버)
         vector_rows: list[dict] = []
         try:
             [query_vec] = await embedding.embed_texts([req.query])
             vector_rows = await embedding.search_similar(
-                query_vec, top_k=_CANDIDATES, category=label
+                query_vec, top_k=_CANDIDATES, category=category_label(req.category)
             )
+            # 사건종류명은 SQL 이 걸렀고, 주제 키워드만 여기서 좁힌다.
+            vector_rows = [
+                r
+                for r in vector_rows
+                if matches_category(req.category, r["category"], r["name"])
+            ]
         except Exception:
             logger.warning("벡터 검색 미가용 — 키워드 후보만 사용", exc_info=True)
 
@@ -260,31 +446,80 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
         detail_results = await asyncio.gather(
             *(_detail_of(i) for i in items), return_exceptions=True
         )
-    details: list[dict] = []
-    for i, d in zip(items, detail_results):
-        if isinstance(d, BaseException):
-            logger.warning(
-                "판례 본문 조회 실패 (serial=%s): %s", i.get("판례일련번호"), d
-            )
-            d = {}
-        details.append(d)
 
-    # [예선] 일괄 채점 → 상위 limit 건 선발
-    ranked = await _rerank(req, items, details)
-    finalists = ranked[: req.limit]
+        details: list[dict] = []
+        for i, d in zip(items, detail_results):
+            if isinstance(d, BaseException):
+                logger.warning(
+                    "판례 본문 조회 실패 (serial=%s): %s", i.get("판례일련번호"), d
+                )
+                d = {}
+            details.append(d)
+
+        # [예선] 일괄 채점 → 상위 limit 건 선발
+        ranked = await _rerank(req, items, details)
+        finalists = ranked[: req.limit]
+
+        # 승패 판정의 근거는 주문인데 코퍼스에는 주문이 없다.
+        # 본선 진출작 중 주문이 빠진 건만 law.go.kr 에서 마저 채운다.
+        missing = [i for i, _ in finalists if not details[i].get("주문")]
+        if missing:
+            refetched = await asyncio.gather(
+                *(
+                    client.fetch_precedent_detail(http, str(items[i]["판례일련번호"]))
+                    for i in missing
+                ),
+                return_exceptions=True,
+            )
+            for i, d in zip(missing, refetched):
+                if isinstance(d, BaseException):
+                    logger.warning(
+                        "판례 주문 조회 실패 (serial=%s): %s",
+                        items[i].get("판례일련번호"),
+                        d,
+                    )
+                    continue
+                details[i] = {**details[i], **d}
+
+    # 본선 진출작의 승패 분류 — 카드 배지용. 통계와 같은 분류기를 쓴다.
+    outcomes = await classify_outcomes(
+        [
+            (
+                i,
+                items[i].get("사건명", ""),
+                items[i].get("법원명", ""),
+                details[i].get("주문", ""),
+                (details[i].get("판결요지") or "")[:_HOLDING_EXCERPT],
+            )
+            for i, _ in finalists
+        ]
+    )
 
     # [본선] 참고 포인트 병렬 생성
     semaphore = asyncio.Semaphore(_CONCURRENCY)
 
     async def _bounded(idx: int, score: int) -> CaseCard:
         async with semaphore:
-            return await _make_card(req, items[idx], details[idx], score)
+            return await _make_card(
+                req, items[idx], details[idx], score, outcomes.get(idx, "unknown")
+            )
 
     cards = await asyncio.gather(*(_bounded(i, s) for i, s in finalists))
 
     # 관련 법령은 본선 진출작 기준으로 집계 (무관한 판례의 조문 배제)
-    statutes = _aggregate_statutes(
+    ranked_statutes = _aggregate_statutes(
         [details[i].get("참조조문", "") for i, _ in finalists]
     )
+    async with httpx.AsyncClient() as http:
+        statutes = await _build_statutes(http, ranked_statutes)
 
-    return SearchResponse(total=total, cases=list(cards), statutes=statutes)
+    # 통계가 실패해도 카드·법령은 그대로 내려준다.
+    try:
+        statistics = await stats_task
+    except Exception:
+        logger.exception("승소율 통계 산출 실패 — statistics 는 null 로 응답")
+        statistics = None
+
+    return SearchResponse(
+        total=total, cases=list(cards), statutes=statutes, statistics=statistics
+    )

@@ -6,14 +6,21 @@
 여러 건이면 list 로 내려와 정규화가 필요하다.
 """
 
+import logging
 import re
 
 import httpx
 
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 _BASE = "https://www.law.go.kr/DRF"
 _TIMEOUT = 10.0
+
+# 조문 제목은 거의 바뀌지 않으므로 프로세스 메모리에 캐시한다 (재시작 시 초기화).
+_mst_cache: dict[str, str | None] = {}
+_title_cache: dict[tuple[str, str], str | None] = {}
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -121,6 +128,75 @@ async def fetch_precedent_detail(client: httpx.AsyncClient, serial_id: str) -> d
         "참조조문": _strip_html(body.get("참조조문") or ""),
         "주문": _extract_order(_strip_html(body.get("판례내용") or "")),
     }
+
+
+async def _law_mst(client: httpx.AsyncClient, law_name: str) -> str | None:
+    """법령명으로 법령일련번호(MST)를 찾는다 — 부분 일치가 섞이므로 정확 일치만."""
+    if law_name in _mst_cache:
+        return _mst_cache[law_name]
+    res = await client.get(
+        f"{_BASE}/lawSearch.do",
+        params={
+            "OC": _ensure_key(),
+            "target": "law",
+            "type": "JSON",
+            "query": law_name,
+            "display": 50,
+        },
+        headers=_headers(),
+        timeout=_TIMEOUT,
+    )
+    res.raise_for_status()
+    found = None
+    for law in _as_list(res.json().get("LawSearch", {}).get("law")):
+        if law.get("법령명한글") == law_name:
+            found = law.get("법령일련번호")
+            break
+    _mst_cache[law_name] = found
+    return found
+
+
+async def fetch_statute_title(
+    client: httpx.AsyncClient, law_name: str, jo: str, ui: str = ""
+) -> str | None:
+    """조문 제목을 조회한다 (예: 민법 제618조 → "임대차의 의의").
+
+    JO 파라미터는 조 4자리 + 가지번호 2자리다 (제618조=061800, 제3조의2=000302).
+    조문 제목은 거의 바뀌지 않으므로 프로세스 메모리에 캐시한다.
+    실패하면 None — 조문 번호만 표시하고 넘어간다.
+    """
+    branch = re.sub(r"\D", "", ui or "") or "0"
+    code = f"{int(jo):04d}{int(branch):02d}"
+    cache_key = (law_name, code)
+    if cache_key in _title_cache:
+        return _title_cache[cache_key]
+
+    title = None
+    try:
+        mst = await _law_mst(client, law_name)
+        if mst:
+            res = await client.get(
+                f"{_BASE}/lawService.do",
+                params={
+                    "OC": _ensure_key(),
+                    "target": "law",
+                    "type": "JSON",
+                    "MST": mst,
+                    "JO": code,
+                },
+                headers=_headers(),
+                timeout=_TIMEOUT,
+            )
+            res.raise_for_status()
+            units = _as_list(res.json().get("법령", {}).get("조문", {}).get("조문단위"))
+            # 같은 조문번호로 절 제목 등이 함께 오므로 조문제목이 있는 항목만 쓴다
+            titles = [u.get("조문제목") for u in units if u.get("조문제목")]
+            title = titles[0] if titles else None
+    except Exception:
+        logger.warning("조문 제목 조회 실패 (%s 제%s조)", law_name, jo, exc_info=True)
+
+    _title_cache[cache_key] = title
+    return title
 
 
 def public_detail_url(serial_id: str) -> str:
