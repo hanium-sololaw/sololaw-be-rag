@@ -18,9 +18,9 @@ from app.cases.schemas import (
     StatisticsResponse,
 )
 from app.cases.service import (
-    _CATEGORY_LABELS,
     _HOLDING_EXCERPT,
     classify_outcomes,
+    matches_category,
     resolve_query,
 )
 
@@ -51,10 +51,11 @@ async def get_statistics(req: StatisticsRequest) -> StatisticsResponse:
 
     async with httpx.AsyncClient() as http:
         _, items = await client.search_precedents(http, query, display=req.sample_size)
-        if req.category:
-            label = _CATEGORY_LABELS[req.category]
-            items = [i for i in items if label in (i.get("사건종류명") or "")]
-        items = items[: req.sample_size]
+        items = [
+            i
+            for i in items
+            if matches_category(req.category, i.get("사건종류명"), i.get("사건명"))
+        ][: req.sample_size]
 
         detail_results = await asyncio.gather(
             *(

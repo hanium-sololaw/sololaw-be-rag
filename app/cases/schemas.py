@@ -10,12 +10,15 @@ Outcome = Literal["win", "partial", "lose", "unknown"]
 
 
 class CaseCategory(str, Enum):
-    """사건 분야 필터 (전체는 미지정)."""
+    """검색 필터 칩 (전체는 미지정).
 
-    CIVIL = "civil"  # 민사
-    CRIMINAL = "criminal"  # 형사
-    ADMINISTRATIVE = "administrative"  # 행정
-    FAMILY = "family"  # 가사
+    민사는 법원의 사건종류명이고, 대여금·임대차는 그 안의 사건 주제다.
+    나홀로 소송이 민사만 다루므로 형사·행정·가사는 두지 않는다.
+    """
+
+    CIVIL = "civil"  # 민사 전체
+    LOAN = "loan"  # 대여금
+    LEASE = "lease"  # 임대차
 
 
 class _SearchBase(BaseModel):
@@ -28,10 +31,10 @@ class _SearchBase(BaseModel):
     )
     category: CaseCategory | None = Field(
         None,
-        description="사건 분야 필터 (civil=민사, criminal=형사, "
-        "administrative=행정, family=가사). 미지정·빈값 시 전체. "
+        description="검색 필터 칩 (civil=민사, loan=대여금, lease=임대차). "
+        "미지정·빈값 시 전체. 대여금·임대차는 민사 안에서 사건명으로 한 번 더 좁힌다. "
         "내 사건 기반 탭은 프론트가 사건 유형으로 자동 지정 권장",
-        examples=["civil"],
+        examples=["loan"],
     )
     case_context: str | None = Field(
         None,

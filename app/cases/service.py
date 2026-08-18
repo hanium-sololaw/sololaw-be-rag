@@ -40,13 +40,30 @@ _CONCURRENCY = 5  # 동시 LLM 호출 제한 (본선)
 _BATCH = 25  # 승패 분류 LLM 배치 1회당 판례 수
 _HOLDING_EXCERPT = 200  # 승패 분류용 판결요지 발췌 길이
 
-# 분야 필터 → 국가법령정보센터 사건종류명 매칭 문자열
-_CATEGORY_LABELS: dict[CaseCategory, str] = {
-    CaseCategory.CIVIL: "민사",
-    CaseCategory.CRIMINAL: "형사",
-    CaseCategory.ADMINISTRATIVE: "행정",
-    CaseCategory.FAMILY: "가사",
+# 필터 칩 → (사건종류명 매칭 문자열, 사건명 키워드).
+# 대여금·임대차는 사건종류명이 아니라 민사 안의 주제라 사건명으로 한 번 더 좁힌다.
+_CATEGORY_FILTERS: dict[CaseCategory, tuple[str, tuple[str, ...]]] = {
+    CaseCategory.CIVIL: ("민사", ()),
+    CaseCategory.LOAN: ("민사", ("대여금", "차용", "소비대차", "약정금")),
+    CaseCategory.LEASE: ("민사", ("임대차", "임차", "보증금", "명도", "건물인도")),
 }
+
+
+def category_label(category: CaseCategory | None) -> str | None:
+    """필터 칩의 사건종류명 부분 — 벡터 검색의 SQL 필터에 쓴다."""
+    return _CATEGORY_FILTERS[category][0] if category else None
+
+
+def matches_category(
+    category: CaseCategory | None, case_type: str | None, case_name: str | None
+) -> bool:
+    """판례 한 건이 필터 칩에 해당하는지 — 사건종류명 + 사건명 키워드."""
+    if not category:
+        return True
+    label, keywords = _CATEGORY_FILTERS[category]
+    if label not in (case_type or ""):
+        return False
+    return not keywords or any(k in (case_name or "") for k in keywords)
 
 # 참조조문에서 "법명 제N조(의M)" 추출. 법명 생략 시 직전 법명을 승계.
 # 법명은 띄어쓰기 포함 가능 (예: 상가건물 임대차보호법)
@@ -268,25 +285,30 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
     # 키워드 확정 (내 사건 기반 탭은 case_context 에서 추출)
     resolved = await resolve_query(req.query, req.case_context)
     req = req.model_copy(update={"query": resolved})
-    label = _CATEGORY_LABELS[req.category] if req.category else None
-
     async with httpx.AsyncClient() as http:
         # (a) 키워드 후보 — law.go.kr 실시간 검색 (최신 판례 커버)
         total, keyword_items = await client.search_precedents(
             http, req.query, display=_CANDIDATES
         )
-        if label:
-            keyword_items = [
-                i for i in keyword_items if label in (i.get("사건종류명") or "")
-            ]
+        keyword_items = [
+            i
+            for i in keyword_items
+            if matches_category(req.category, i.get("사건종류명"), i.get("사건명"))
+        ]
 
         # (b) 벡터 후보 — 판례 임베딩 코퍼스 유사도 검색 (용어 불일치 커버)
         vector_rows: list[dict] = []
         try:
             [query_vec] = await embedding.embed_texts([req.query])
             vector_rows = await embedding.search_similar(
-                query_vec, top_k=_CANDIDATES, category=label
+                query_vec, top_k=_CANDIDATES, category=category_label(req.category)
             )
+            # 사건종류명은 SQL 이 걸렀고, 주제 키워드만 여기서 좁힌다.
+            vector_rows = [
+                r
+                for r in vector_rows
+                if matches_category(req.category, r["category"], r["name"])
+            ]
         except Exception:
             logger.warning("벡터 검색 미가용 — 키워드 후보만 사용", exc_info=True)
 
