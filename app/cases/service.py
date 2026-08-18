@@ -65,6 +65,7 @@ def matches_category(
         return False
     return not keywords or any(k in (case_name or "") for k in keywords)
 
+
 # 참조조문에서 "법명 제N조(의M)" 추출. 법명 생략 시 직전 법명을 승계.
 # 법명은 띄어쓰기 포함 가능 (예: 상가건물 임대차보호법)
 _STATUTE_RE = re.compile(
