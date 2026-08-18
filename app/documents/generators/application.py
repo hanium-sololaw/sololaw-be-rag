@@ -10,7 +10,9 @@ from app.shared.llm import get_openai_client
 
 
 class ApplicationGenerator(BaseGenerator):
-    section_map = prompt.SECTION_MAP
+    # 섹션 구성이 신청서 종류마다 달라 고정 맵을 두지 않는다.
+    # None 이면 service 가 마크다운 헤더를 그대로 키로 써서 파싱한다.
+    section_map = None
 
     async def generate_stream(self, inputs: dict) -> AsyncIterator[str]:
         data = ApplicationInput(
@@ -20,7 +22,10 @@ class ApplicationGenerator(BaseGenerator):
             model=settings.OPENAI_MODEL,
             stream=True,
             messages=[
-                {"role": "system", "content": prompt.SYSTEM},
+                {
+                    "role": "system",
+                    "content": prompt.build_system_prompt(data.application_type),
+                },
                 {"role": "user", "content": prompt.build_user_prompt(data)},
             ],
         )

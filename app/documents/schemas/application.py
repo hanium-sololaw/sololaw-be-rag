@@ -1,72 +1,124 @@
-"""신청서(application) 입력/출력 스키마."""
+"""신청서(application) 입력 스키마.
+
+신청서는 사건 유형이 아니라 '절차적 목적' 으로 갈린다. 종류마다 필요한 입력과
+완성 문서의 섹션 구성이 서로 달라, 소장처럼 사실관계를 facts 로 받고
+출력 섹션도 종류별 스펙(prompts/application.py)에 맡긴다.
+"""
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.documents.schemas.common import CitedPrecedent, Party
 
 
 class ApplicationType(str, Enum):
-    """신청서 종류 (드롭다운)."""
+    """신청서 종류 — 화면 목록과 1:1."""
 
-    HEARING_DATE_CHANGE = "hearing_date_change"  # 기일변경신청서
-    DOCUMENT_TRANSMISSION = "document_transmission"  # 문서송부촉탁신청서
-    CORRECTION = "correction"  # 보정서/보정신청서
+    PAYMENT_ORDER = "payment_order"  # 지급명령신청서
     LITIGATION_AID = "litigation_aid"  # 소송구조신청서
+    LEASE_REGISTRATION = "lease_registration"  # 임차권등기명령신청서
+    ENFORCEMENT = "enforcement"  # 강제집행신청서
+    PROVISIONAL_SEIZURE = "provisional_seizure"  # 가압류신청서
 
 
-class ApplicantRole(str, Enum):
-    """신청인이 사건에서 갖는 지위."""
-
-    PLAINTIFF = "plaintiff"  # 원고
-    DEFENDANT = "defendant"  # 피고
+# 상대방 없이 법원에만 내는 신청서 (respondent 불필요)
+SOLO_TYPES = {ApplicationType.LITIGATION_AID}
 
 
 class ApplicationInput(BaseModel):
-    """신청서 - 정보 입력 (step2)."""
+    """신청서 - 정보 입력 (위저드 결과를 한 번에 받는다)."""
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "application_type": "payment_order",
+                "court": "서울중앙지방법원",
+                "claim_amount": 10000000,
+                "applicant": {
+                    "name": "홍길동",
+                    "address": "서울특별시 동작구 상도로 200 1102호",
+                    "phone": "010-2841-7306",
+                },
+                "respondent": {
+                    "name": "김철수",
+                    "address": "서울특별시 강남구 테헤란로 152 1204호",
+                    "phone": "010-9274-1185",
+                },
+                "facts": {
+                    "청구 종류": "대여금",
+                    "채권 발생일": "2023-05-10",
+                    "변제기": "2024-05-10",
+                    "이자·지연손해금": "청구함",
+                },
+                "narrative": "2023년 5월에 빌려준 돈인데 갚기로 한 날이 지나도 "
+                "안 갚고 연락도 잘 안 받아요.",
+                "attachments": ["차용증·계약서", "계좌이체 내역", "내용증명 우편물"],
+                "cited_precedents": [],
+            }
+        }
+    }
 
     application_type: ApplicationType = Field(
-        description="신청서 종류 (hearing_date_change=기일변경신청서, "
-        "document_transmission=문서송부촉탁신청서, correction=보정서/보정신청서, "
-        "litigation_aid=소송구조신청서)",
-        examples=["hearing_date_change"],
-    )
-    case_no: str = Field(
-        description="사건 번호", examples=["2024가단123456 임대차보증금반환"]
+        description="신청서 종류 (payment_order=지급명령, litigation_aid=소송구조, "
+        "lease_registration=임차권등기명령, enforcement=강제집행, "
+        "provisional_seizure=가압류)",
+        examples=["payment_order"],
     )
     court: str = Field(
-        description="사건이 계속 중인 법원", examples=["서울중앙지방법원"]
+        description="신청할 법원. 종류마다 관할이 다르다 — 지급명령은 채무자 주소지",
+        examples=["서울중앙지방법원"],
     )
-    plaintiff: str = Field(description="원고 이름", examples=["홍길동"])
-    defendant: str = Field(description="피고 이름", examples=["김철수"])
-    applicant_role: ApplicantRole = Field(
-        default=ApplicantRole.PLAINTIFF,
-        description="신청인이 원고/피고 중 누구인지 (기본 원고)",
-        examples=["plaintiff"],
+
+    applicant: Party = Field(
+        description="신청하는 쪽. 종류에 따라 채권자·신청인·임차인으로 표시된다"
     )
-    reason_text: str = Field(
-        description="신청하는 이유 — 일상 언어로 쓰면 AI가 법률 문언으로 변환",
-        examples=[
-            "기일 당일 출장이 잡혀서 변론기일을 2주 뒤로 미뤄달라고 신청하려 합니다."
-        ],
-    )
-    related_date: str | None = Field(
+    respondent: Party | None = Field(
         None,
-        description="관련 날짜 (변경 대상 기일, 보정명령 수령일 등)",
-        examples=["변론기일 2026-07-15"],
+        description="상대방. 종류에 따라 채무자·피신청인·임대인으로 표시된다. "
+        "소송구조신청서는 상대방이 없어 생략한다",
     )
+
+    case_no: str | None = Field(
+        None,
+        description="사건번호. 소송구조는 계속 중인 사건, 강제집행은 집행권원의 사건",
+        examples=["2024가단123456"],
+    )
+    case_name: str | None = Field(
+        None,
+        description="사건명 (소송구조신청서)",
+        examples=["임대차 보증금 반환 청구"],
+    )
+    claim_amount: int | None = Field(
+        None,
+        description="청구·집행 금액(원). 지급명령·강제집행·가압류에서 쓴다",
+        examples=[10000000],
+    )
+
+    facts: dict[str, str] = Field(
+        default={},
+        description="종류별 구조화 입력을 {화면 항목: 답} 으로 그대로 담는다. "
+        "신청서마다 묻는 항목이 달라 스키마를 고정하지 않는다",
+        examples=[{"청구 종류": "대여금", "채권 발생일": "2023-05-10"}],
+    )
+    narrative: str = Field(
+        description="신청 사유 자유서술 — 일상 언어로 쓰면 AI 가 법률 문언으로 변환",
+        examples=["갚기로 한 날이 지나도 안 갚고 연락도 잘 안 받아요."],
+    )
+
     attachments: list[str] = Field(
         default=[],
-        description="첨부 서류 라벨 목록 — 첨부서류 섹션 작성에 반영",
-        examples=[["출장확인서"]],
+        description="함께 낼 서류 라벨 목록",
+        examples=[["차용증·계약서", "계좌이체 내역"]],
+    )
+    cited_precedents: list[CitedPrecedent] = Field(
+        default=[],
+        description="인용할 판례. 임차권등기명령신청서의 '관련 법리' 섹션에 반영된다",
     )
 
-
-class ApplicationSections(BaseModel):
-    """신청서 구조화 결과 (스트림 완료 시 파싱). PDF·편집용."""
-
-    title: str = Field("", description="신청서 제목 (예: 기일변경 신청서)")
-    case_info: str = Field("", description="사건 표시 (사건번호·원고·피고)")
-    purpose: str = Field("", description="신청취지")
-    reason: str = Field("", description="신청이유")
-    attachments: str = Field("", description="첨부서류")
-    court: str = Field("", description="관할법원 (○○법원 귀중)")
+    @model_validator(mode="after")
+    def _require_respondent(self):
+        """상대방이 있는 신청서인데 respondent 가 비면 당사자 표시를 못 만든다."""
+        if self.application_type not in SOLO_TYPES and self.respondent is None:
+            raise ValueError("이 신청서 종류는 상대방(respondent) 정보가 필요합니다.")
+        return self

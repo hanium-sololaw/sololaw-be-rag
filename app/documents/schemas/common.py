@@ -2,7 +2,47 @@
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class Party(BaseModel):
+    """당사자 — 문서 유형에 따라 원고·피고, 채권자·채무자, 신청인·피신청인이 된다.
+
+    호칭은 문서마다 다르지만 담기는 정보는 같아 한 모델을 공유한다.
+    """
+
+    name: str = Field(description="이름 또는 상호", examples=["홍길동"])
+    resident_id: str | None = Field(
+        None,
+        description="주민등록번호. **LLM 에는 전달되지 않는다** — 문서 표시·마스킹은 "
+        "프론트가 처리한다 (신청서는 기재사항이라 법원 제출본에만 들어간다)",
+        examples=["900101-1234567"],
+    )
+    address: str = Field(
+        description="주소 (도로명)", examples=["서울특별시 서초구 서초대로 12"]
+    )
+    phone: str | None = Field(None, description="연락처", examples=["010-1234-5678"])
+    email: str | None = Field(None, description="이메일", examples=["hong@example.com"])
+    service_address: str | None = Field(
+        None,
+        description="송달받을 주소 (주소와 다를 때만)",
+        examples=["서울특별시 강남구 테헤란로 1"],
+    )
+    fax: str | None = Field(None, description="팩스 번호", examples=["02-1234-5678"])
+    representative: str | None = Field(
+        None,
+        description="법인 대표자 또는 미성년자의 법정대리인. 당사자 표시에 병기된다",
+        examples=["대표이사 김철수"],
+    )
+
+
+class CitedPrecedent(BaseModel):
+    """인용할 판례 (판례 검색에서 담아온 것)."""
+
+    case_no: str = Field(description="사건번호", examples=["대법원 2020다12345"])
+    summary: str | None = Field(
+        None, description="판례 요지", examples=["임대차 종료 시 보증금 반환 의무"]
+    )
 
 
 class DocumentType(str, Enum):
