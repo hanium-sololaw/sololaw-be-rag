@@ -5,6 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# 원고 기준 승패. 판례 카드 배지와 승소율 통계가 같은 분류를 공유한다.
+Outcome = Literal["win", "partial", "lose", "unknown"]
+
 
 class CaseCategory(str, Enum):
     """사건 분야 필터 (전체는 미지정)."""
@@ -71,6 +74,13 @@ class CaseCard(BaseModel):
     decision_date: str = Field(description="선고일자")
     category: str = Field(description="사건종류명 (민사·형사 등)")
     relevance: int = Field(description="사건 맥락 대비 관련도 0~100 (AI 산출)")
+    outcome: Outcome = Field(
+        "unknown",
+        description="이 판례에서 원고가 이겼는지 (AI 판정) — 카드의 결과 배지용. "
+        "win=원고 승소, partial=원고 일부승소, lose=원고 패소, "
+        "unknown=판단 불가(파기환송 등). unknown 은 배지를 표시하지 않는다",
+        examples=["win"],
+    )
     similarity: int | None = Field(
         None,
         description="판례 임베딩 코사인 유사도 % (벡터 검색으로 확보된 후보만, "
@@ -160,7 +170,7 @@ class OutcomeItem(BaseModel):
     """LLM 승패 분류 결과 한 건."""
 
     id: int
-    outcome: Literal["win", "partial", "lose", "unknown"]
+    outcome: Outcome
 
 
 class OutcomeBatchDraft(BaseModel):
