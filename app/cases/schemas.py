@@ -62,6 +62,32 @@ class _SearchBase(BaseModel):
 class SearchRequest(_SearchBase):
     """판례 검색 요청."""
 
+    # 필드별 examples 를 Swagger 가 조립하면 query 와 case_context 가 함께 채워져
+    # 탭 규칙(둘 중 하나)이 가려진다. 탭별 예시를 각각 고정한다.
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "키워드로 판례 검색 탭",
+                    "value": {
+                        "query": "임대차 보증금 반환 거부",
+                        "category": "lease",
+                        "limit": 10,
+                    },
+                },
+                {
+                    "summary": "내 사건과 비슷한 판례 탭",
+                    "value": {
+                        "case_context": "임대차 계약이 끝났는데 임대인이 보증금 "
+                        "1,000만원 반환을 거부하고 있는 사건",
+                        "category": "lease",
+                        "limit": 10,
+                    },
+                },
+            ]
+        }
+    }
+
     limit: int = Field(
         5, ge=1, le=10, description="AI 분석해 반환할 판례 수 (기본 5, 최대 10)"
     )
@@ -109,6 +135,54 @@ class RelatedStatute(BaseModel):
 class SearchResponse(BaseModel):
     """판례 검색 응답."""
 
+    # unknown 배지·title null 처럼 프론트가 대비해야 할 값이 예시에 보이도록 고정한다.
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "total": 2588,
+                "cases": [
+                    {
+                        "serial_id": "246789",
+                        "name": "임대차보증금반환청구",
+                        "case_no": "2022다123456",
+                        "court": "대법원",
+                        "decision_date": "20230615",
+                        "category": "민사",
+                        "relevance": 90,
+                        "outcome": "win",
+                        "similarity": 82,
+                        "reference_note": "임대차계약 종료 후 임대인이 보증금 반환을 "
+                        "거부한 사건에서, 임차인의 명도와 보증금 반환은 동시이행 "
+                        "관계임을 확인.",
+                        "detail_url": "https://www.law.go.kr/LSW/precInfoP.do?precSeq=246789",
+                    },
+                    {
+                        "serial_id": "251034",
+                        "name": "건물인도",
+                        "case_no": "2023다307116",
+                        "court": "대법원",
+                        "decision_date": "20260409",
+                        "category": "민사",
+                        "relevance": 70,
+                        "outcome": "unknown",
+                        "similarity": 74,
+                        "reference_note": "상고심이라 승패를 확정할 수 없는 예시. "
+                        "outcome 이 unknown 이면 결과 배지를 표시하지 않는다.",
+                        "detail_url": "https://www.law.go.kr/LSW/precInfoP.do?precSeq=251034",
+                    },
+                ],
+                "statutes": [
+                    {"name": "민법 제618조", "title": "임대차의 의의", "count": 3},
+                    {
+                        "name": "주택임대차보호법 제3조의2",
+                        "title": "보증금의 회수",
+                        "count": 2,
+                    },
+                ],
+            }
+        }
+    }
+
     total: int = Field(description="검색 API 전체 매칭 건수")
     cases: list[CaseCard] = Field(description="AI 분석된 판례 (관련도 내림차순)")
     statutes: list[RelatedStatute] = Field(description="관련 법령 (인용 횟수순)")
@@ -119,6 +193,30 @@ class SearchResponse(BaseModel):
 
 class StatisticsRequest(_SearchBase):
     """승소율 통계 요청."""
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "키워드로 판례 검색 탭",
+                    "value": {
+                        "query": "임대차 보증금 반환 거부",
+                        "category": "lease",
+                        "sample_size": 30,
+                    },
+                },
+                {
+                    "summary": "내 사건과 비슷한 판례 탭",
+                    "value": {
+                        "case_context": "임대차 계약이 끝났는데 임대인이 보증금 "
+                        "1,000만원 반환을 거부하고 있는 사건",
+                        "category": "lease",
+                        "sample_size": 30,
+                    },
+                },
+            ]
+        }
+    }
 
     sample_size: int = Field(
         30, ge=10, le=50, description="분석할 판례 표본 수 (기본 30, 10~50)"

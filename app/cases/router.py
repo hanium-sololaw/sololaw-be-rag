@@ -51,6 +51,10 @@ router = APIRouter(prefix="/cases", tags=["cases"])
     "조문 번호만 쓰면 된다\n"
     "- 후보는 하이브리드로 확보 — law.go.kr 키워드 검색 + 판례 임베딩 코퍼스 유사도 "
     "검색, 벡터 저장소 미가용 시 키워드만으로 자동 폴백\n"
+    "- **null 이 올 수 있는 값**: `similarity`(키워드로만 찾은 판례), "
+    "`statutes[].title`(조문 제목 조회 실패). 아래 예시에는 값이 있는 경우만 담았지만 "
+    "키 자체는 항상 내려간다\n"
+    "- 대여금·임대차 필터는 후보를 좁히므로 **결과가 0건일 수 있다** — 빈 결과 처리 필요\n"
     "- limit 만큼 AI 분석하므로 응답에 수 초 소요",
 )
 async def search(req: SearchRequest):
