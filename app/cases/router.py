@@ -1,12 +1,37 @@
 """판례 검색 API 라우터."""
 
-from fastapi import APIRouter, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, Body, HTTPException
 
 from app.cases import service
 from app.cases.client import LawApiError
 from app.cases.schemas import SearchRequest, SearchResponse
 
 router = APIRouter(prefix="/cases", tags=["cases"])
+
+# 탭마다 보내는 필드가 달라 예시를 나눠 둔다 (Swagger 의 Examples 드롭다운).
+_SEARCH_EXAMPLES = {
+    "keyword": {
+        "summary": "키워드로 판례 검색 탭",
+        "description": "사용자가 입력한 검색어로 찾는다. case_context 는 보내지 않는다.",
+        "value": {
+            "query": "임대차 보증금 반환 거부",
+            "category": "lease",
+            "limit": 10,
+        },
+    },
+    "case_context": {
+        "summary": "내 사건과 비슷한 판례 탭",
+        "description": "사건 설명만 보내면 AI 가 검색 키워드를 뽑는다. query 는 보내지 않는다.",
+        "value": {
+            "case_context": "임대차 계약이 끝났는데 임대인이 보증금 1,000만원 "
+            "반환을 거부하고 있는 사건",
+            "category": "lease",
+            "limit": 10,
+        },
+    },
+}
 
 
 @router.post(
@@ -66,7 +91,9 @@ router = APIRouter(prefix="/cases", tags=["cases"])
     "- 전국 통계가 아닌 검색 표본 기반 참고 지표다. 동일 조건 재조회는 1시간 캐시\n\n"
     "AI 호출이 여러 번 일어나 응답에 10초 안팎이 걸린다. 로딩 상태가 필요하다.",
 )
-async def search(req: SearchRequest):
+async def search(
+    req: Annotated[SearchRequest, Body(openapi_examples=_SEARCH_EXAMPLES)],
+):
     try:
         return await service.search_cases(req)
     except LawApiError as e:
