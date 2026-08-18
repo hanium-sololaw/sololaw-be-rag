@@ -62,31 +62,9 @@ class _SearchBase(BaseModel):
 class SearchRequest(_SearchBase):
     """판례 검색 요청."""
 
-    # 필드별 examples 를 Swagger 가 조립하면 query 와 case_context 가 함께 채워져
-    # 탭 규칙(둘 중 하나)이 가려진다. 탭별 예시를 각각 고정한다.
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "summary": "키워드로 판례 검색 탭",
-                    "value": {
-                        "query": "임대차 보증금 반환 거부",
-                        "category": "lease",
-                        "limit": 10,
-                    },
-                },
-                {
-                    "summary": "내 사건과 비슷한 판례 탭",
-                    "value": {
-                        "case_context": "임대차 계약이 끝났는데 임대인이 보증금 "
-                        "1,000만원 반환을 거부하고 있는 사건",
-                        "category": "lease",
-                        "limit": 10,
-                    },
-                },
-            ]
-        }
-    }
+    # 탭별 요청 예시는 라우터의 Body(openapi_examples=...) 에 둔다.
+    # 스키마 예시 자리에 {summary, value} 를 넣으면 그 래퍼째로 요청 본문이 되어
+    # 422 가 난다 — 이름 붙은 예시는 미디어 타입 레벨에만 쓸 수 있다.
 
     limit: int = Field(
         5, ge=1, le=10, description="AI 분석해 반환할 판례 수 (기본 5, 최대 10)"
