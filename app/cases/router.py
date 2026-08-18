@@ -2,14 +2,9 @@
 
 from fastapi import APIRouter, HTTPException
 
-from app.cases import service, statistics
+from app.cases import service
 from app.cases.client import LawApiError
-from app.cases.schemas import (
-    SearchRequest,
-    SearchResponse,
-    StatisticsRequest,
-    StatisticsResponse,
-)
+from app.cases.schemas import SearchRequest, SearchResponse
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -26,7 +21,8 @@ router = APIRouter(prefix="/cases", tags=["cases"])
     "| query | 보내지 않음 | 사용자가 입력한 키워드 |\n"
     "| case_context | 사건 설명 — AI 가 검색 키워드 추출 | 보내지 않음 |\n"
     "| category | 사건 유형으로 프론트가 자동 지정 | 사용자가 필터에서 선택 |\n"
-    "| limit | 동일 — 선택 | 동일 — 선택 |\n\n"
+    "| limit | 동일 — 선택 | 동일 — 선택 |\n"
+    "| sample_size | 동일 — 선택, 기본 30 | 동일 — 선택, 기본 30 |\n\n"
     "둘을 같이 보내면 query 로 검색하고 관련도는 case_context 기준으로 채점한다.\n\n"
     "**category 관련 설명**\n\n"
     "화면의 필터 칩과 1:1 대응한다.\n\n"
@@ -54,41 +50,24 @@ router = APIRouter(prefix="/cases", tags=["cases"])
     "- **null 이 올 수 있는 값**: `similarity`(키워드로만 찾은 판례), "
     "`statutes[].title`(조문 제목 조회 실패). 아래 예시에는 값이 있는 경우만 담았지만 "
     "키 자체는 항상 내려간다\n"
-    "- 대여금·임대차 필터는 후보를 좁히므로 **결과가 0건일 수 있다** — 빈 결과 처리 필요\n"
-    "- limit 만큼 AI 분석하므로 응답에 수 초 소요",
+    "- 대여금·임대차 필터는 후보를 좁히므로 **결과가 0건일 수 있다** — 빈 결과 처리 필요\n\n"
+    "**statistics — 유사 판례 승소율 통계**\n\n"
+    "화면 우측 `유사 판례 통계` 패널용이다. 검색과 **동시에 계산해 한 응답에 함께** "
+    "내려주므로 따로 호출하지 않는다. 산출에 실패하면 `statistics` 만 null 이고 "
+    "카드·법령은 정상 반환된다.\n\n"
+    "- **plaintiff_win_rate**: 판단 가능 건 중 원고 승소·일부 승소 %. "
+    "판단 가능 건 5건 미만이면 null — 소표본 왜곡 방지. "
+    "민사는 일부 인용이 다수라 **일부 승소도 승소로 센다**\n"
+    "- **classified**: 승패 판단 가능 건수 — 파기환송 등 판단 불가는 비율에서 제외\n"
+    "- **outcomes**: 승패 분포 (win·partial·lose·unknown)\n"
+    "- **disclaimer**: 면책 문구 — 프론트에서 반드시 함께 표시\n"
+    "- 카드(`limit` 건)와 통계 표본(`sample_size` 건)은 별개다. 화면에 뜨는 건수가 "
+    "서로 달라도 정상이다\n"
+    "- 전국 통계가 아닌 검색 표본 기반 참고 지표다. 동일 조건 재조회는 1시간 캐시\n\n"
+    "AI 호출이 여러 번 일어나 응답에 10초 안팎이 걸린다. 로딩 상태가 필요하다.",
 )
 async def search(req: SearchRequest):
     try:
         return await service.search_cases(req)
-    except LawApiError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-
-
-@router.post(
-    "/statistics",
-    response_model=StatisticsResponse,
-    summary="유사 판례 승소율 통계",
-    description="검색 표본(최근 공개 판례 최대 50건)의 승패를 AI 가 분류해 원고 승소 "
-    "비율을 산출한다.\n\n"
-    "**탭별 입력 방법 — 판례 검색과 동일 규칙, query 또는 case_context 중 하나는 필수**\n\n"
-    "| 필드 | 내 사건 기반 탭 | 키워드 검색 탭 |\n"
-    "|---|---|---|\n"
-    "| query | 보내지 않음 | 사용자가 입력한 키워드 |\n"
-    "| case_context | 사건 설명 — AI 가 검색 키워드 추출 | 보내지 않음 |\n"
-    "| category | 사건 유형으로 프론트가 자동 지정 | 사용자가 필터에서 선택 |\n"
-    "| sample_size | 동일 — 선택, 기본 30 | 동일 — 선택, 기본 30 |\n\n"
-    "**응답**\n\n"
-    "- **sample_size**: 분석한 표본 수\n"
-    "- **classified**: 승패 판단 가능 건수 — 파기환송 등 판단 불가는 비율에서 제외\n"
-    "- **plaintiff_win_rate**: 판단 가능 건 중 원고 승소·일부 승소 %. "
-    "판단 가능 건 5건 미만이면 null — 소표본 왜곡 방지\n"
-    "- **outcomes**: 승패 분포 (win·partial·lose·unknown)\n"
-    "- **disclaimer**: 면책 문구 — 프론트에서 반드시 함께 표시\n\n"
-    "전국 통계가 아닌 검색 표본 기반 참고 지표이다. 동일 조건 재조회는 1시간 캐시로 "
-    "즉시 응답, 첫 호출은 5~10초 소요.",
-)
-async def get_statistics(req: StatisticsRequest):
-    try:
-        return await statistics.get_statistics(req)
     except LawApiError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e

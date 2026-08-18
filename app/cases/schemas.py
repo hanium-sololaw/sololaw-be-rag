@@ -91,6 +91,13 @@ class SearchRequest(_SearchBase):
     limit: int = Field(
         5, ge=1, le=10, description="AI 분석해 반환할 판례 수 (기본 5, 최대 10)"
     )
+    sample_size: int = Field(
+        30,
+        ge=10,
+        le=50,
+        description="승소율 통계에 쓸 판례 표본 수 (기본 30, 10~50). "
+        "카드와 별개로 더 넓은 표본에서 승패를 집계한다",
+    )
 
 
 class CaseCard(BaseModel):
@@ -130,6 +137,31 @@ class RelatedStatute(BaseModel):
         examples=["임대차의 의의"],
     )
     count: int = Field(description="검색된 판례 중 인용 횟수")
+
+
+# --- 승소율 통계 (검색 응답에 포함) ---
+
+
+class OutcomeCounts(BaseModel):
+    """표본의 승패 분포."""
+
+    win: int = Field(description="원고 승소")
+    partial: int = Field(description="원고 일부 승소")
+    lose: int = Field(description="원고 패소")
+    unknown: int = Field(description="판단 불가 (파기환송·정보 부족 등)")
+
+
+class StatisticsResponse(BaseModel):
+    """승소율 통계 응답 — 검색 표본 기반 참고 지표."""
+
+    sample_size: int = Field(description="분석한 판례 표본 수")
+    classified: int = Field(description="승패 판단이 가능했던 건수")
+    plaintiff_win_rate: int | None = Field(
+        description="판단 가능 건 중 원고 승소·일부 승소 비율 %. "
+        "판단 가능 건이 5건 미만이면 소표본 왜곡 방지를 위해 null"
+    )
+    outcomes: OutcomeCounts = Field(description="승패 분포")
+    disclaimer: str = Field(description="면책 문구 — 프론트에서 반드시 함께 표시")
 
 
 class SearchResponse(BaseModel):
@@ -179,6 +211,20 @@ class SearchResponse(BaseModel):
                         "count": 2,
                     },
                 ],
+                "statistics": {
+                    "sample_size": 30,
+                    "classified": 12,
+                    "plaintiff_win_rate": 92,
+                    "outcomes": {
+                        "win": 8,
+                        "partial": 3,
+                        "lose": 1,
+                        "unknown": 18,
+                    },
+                    "disclaimer": "검색된 공개 판례 표본의 통계적 경향이며 실제 재판 "
+                    "결과를 예측하거나 보장하지 않습니다. 구체적인 결과는 사건의 "
+                    "사실관계에 따라 달라질 수 있습니다.",
+                },
             }
         }
     }
@@ -186,63 +232,11 @@ class SearchResponse(BaseModel):
     total: int = Field(description="검색 API 전체 매칭 건수")
     cases: list[CaseCard] = Field(description="AI 분석된 판례 (관련도 내림차순)")
     statutes: list[RelatedStatute] = Field(description="관련 법령 (인용 횟수순)")
-
-
-# --- 승소율 통계 (statistics) ---
-
-
-class StatisticsRequest(_SearchBase):
-    """승소율 통계 요청."""
-
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "summary": "키워드로 판례 검색 탭",
-                    "value": {
-                        "query": "임대차 보증금 반환 거부",
-                        "category": "lease",
-                        "sample_size": 30,
-                    },
-                },
-                {
-                    "summary": "내 사건과 비슷한 판례 탭",
-                    "value": {
-                        "case_context": "임대차 계약이 끝났는데 임대인이 보증금 "
-                        "1,000만원 반환을 거부하고 있는 사건",
-                        "category": "lease",
-                        "sample_size": 30,
-                    },
-                },
-            ]
-        }
-    }
-
-    sample_size: int = Field(
-        30, ge=10, le=50, description="분석할 판례 표본 수 (기본 30, 10~50)"
+    statistics: StatisticsResponse | None = Field(
+        None,
+        description="유사 판례 승소율 통계. 검색과 동시에 계산해 함께 내려준다. "
+        "통계 산출에 실패하면 null 이며 카드·법령은 정상 반환된다",
     )
-
-
-class OutcomeCounts(BaseModel):
-    """표본의 승패 분포."""
-
-    win: int = Field(description="원고 승소")
-    partial: int = Field(description="원고 일부 승소")
-    lose: int = Field(description="원고 패소")
-    unknown: int = Field(description="판단 불가 (파기환송·정보 부족 등)")
-
-
-class StatisticsResponse(BaseModel):
-    """승소율 통계 응답 — 검색 표본 기반 참고 지표."""
-
-    sample_size: int = Field(description="분석한 판례 표본 수")
-    classified: int = Field(description="승패 판단이 가능했던 건수")
-    plaintiff_win_rate: int | None = Field(
-        description="판단 가능 건 중 원고 승소·일부 승소 비율 %. "
-        "판단 가능 건이 5건 미만이면 소표본 왜곡 방지를 위해 null"
-    )
-    outcomes: OutcomeCounts = Field(description="승패 분포")
-    disclaimer: str = Field(description="면책 문구 — 프론트에서 반드시 함께 표시")
 
 
 # --- LLM structured output 모델 ---
