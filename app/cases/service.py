@@ -74,11 +74,17 @@ _STATUTE_RE = re.compile(
 )
 
 
-def _aggregate_statutes(texts: list[str], top: int = 5) -> list[RelatedStatute]:
-    """판례별 참조조문 텍스트에서 조문을 추출해 판례 단위로 집계한다."""
-    counts: dict[str, int] = {}
+def _aggregate_statutes(
+    texts: list[str], top: int = 5
+) -> list[tuple[tuple[str, str, str], int]]:
+    """판례별 참조조문 텍스트에서 조문을 추출해 판례 단위로 집계한다.
+
+    ((법령명, 조, 가지번호), 인용 판례 수) 를 인용 많은 순으로 돌려준다.
+    조문 제목 조회에 법령명·조 번호가 따로 필요해 문자열로 합치지 않는다.
+    """
+    counts: dict[tuple[str, str, str], int] = {}
     for text in texts:
-        found: set[str] = set()
+        found: set[tuple[str, str, str]] = set()
         current_law: str | None = None
         for m in _STATUTE_RE.finditer(text):
             law, jo, ui = m.group(1), m.group(2), m.group(3) or ""
@@ -86,11 +92,29 @@ def _aggregate_statutes(texts: list[str], top: int = 5) -> list[RelatedStatute]:
                 current_law = law
             if not current_law:
                 continue
-            found.add(f"{current_law} 제{jo}조{ui}")
-        for name in found:
-            counts[name] = counts.get(name, 0) + 1
+            found.add((current_law, jo, ui))
+        for key in found:
+            counts[key] = counts.get(key, 0) + 1
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [RelatedStatute(name=n, count=c) for n, c in ranked[:top]]
+    return ranked[:top]
+
+
+async def _build_statutes(
+    http: httpx.AsyncClient, ranked: list[tuple[tuple[str, str, str], int]]
+) -> list[RelatedStatute]:
+    """집계된 조문에 제목을 붙여 응답 모델로 만든다. 제목 조회는 병렬·실패 허용."""
+    titles = await asyncio.gather(
+        *(client.fetch_statute_title(http, law, jo, ui) for (law, jo, ui), _ in ranked),
+        return_exceptions=True,
+    )
+    return [
+        RelatedStatute(
+            name=f"{law} 제{jo}조{ui}",
+            title=None if isinstance(t, BaseException) else t,
+            count=count,
+        )
+        for ((law, jo, ui), count), t in zip(ranked, titles)
+    ]
 
 
 def _vector_row_to_item(row: dict) -> dict:
@@ -385,8 +409,10 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
     cards = await asyncio.gather(*(_bounded(i, s) for i, s in finalists))
 
     # 관련 법령은 본선 진출작 기준으로 집계 (무관한 판례의 조문 배제)
-    statutes = _aggregate_statutes(
+    ranked_statutes = _aggregate_statutes(
         [details[i].get("참조조문", "") for i, _ in finalists]
     )
+    async with httpx.AsyncClient() as http:
+        statutes = await _build_statutes(http, ranked_statutes)
 
     return SearchResponse(total=total, cases=list(cards), statutes=statutes)

@@ -97,6 +97,12 @@ class RelatedStatute(BaseModel):
     """관련 법령 — 검색된 판례들의 참조조문 집계."""
 
     name: str = Field(description="법령·조문 (예: 민법 제618조)")
+    title: str | None = Field(
+        None,
+        description="조문 제목 (예: 임대차의 의의). 국가법령정보센터에서 조회하며 "
+        "실패 시 null — 조문 번호만 표시한다",
+        examples=["임대차의 의의"],
+    )
     count: int = Field(description="검색된 판례 중 인용 횟수")
 
 
