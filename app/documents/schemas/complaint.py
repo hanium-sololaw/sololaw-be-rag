@@ -187,3 +187,9 @@ class ComplaintSections(BaseModel):
     evidence: str = Field("", description="입증방법 (갑 제N호증 목록)")
     attachments: str = Field("", description="첨부서류")
     court: str = Field("", description="관할법원 (○○법원 귀중)")
+    annex: str = Field(
+        "",
+        description="별지 — 부동산의 표시. 건물명도처럼 목적물을 특정해야 하는 사건에만 "
+        "값이 있고, 나머지는 '해당 없음'. 소장 본문과 별개로 첨부하는 서면이라 "
+        "화면에서도 구분선 아래에 렌더링한다",
+    )
