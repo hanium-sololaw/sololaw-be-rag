@@ -1,6 +1,16 @@
 """증거목록 생성 프롬프트."""
 
-from app.documents.schemas.evidence_list import EvidenceListInput, SubmitterRole
+from app.documents.schemas.evidence_list import (
+    EvidenceListInput,
+    OriginalType,
+    SubmitterRole,
+)
+
+# 원본/사본 enum → 표에 찍히는 한국어
+ORIGINAL_LABELS: dict[OriginalType, str] = {
+    OriginalType.COPY: "사본",
+    OriginalType.ORIGINAL: "원본",
+}
 
 SUBMITTER_ROLE_LABELS: dict[SubmitterRole, str] = {
     SubmitterRole.PLAINTIFF: "원고",
@@ -43,15 +53,18 @@ SYSTEM = """당신은 대한민국 민사소송 법원 제출용 '증거목록' 
   사 건  {사건번호}
   원 고  {원고 이름}
   피 고  {피고 이름}
-- 증거목록: 아래 형식의 마크다운 표로 작성한다. 열은 호증번호·서증명·작성일·입증취지 4개.
-  | 호증번호 | 서증명 | 작성일 | 입증취지 |
-  |---|---|---|---|
-  - 호증번호는 사용자가 전달한 번호를 그대로 사용한다. 순서·번호를 임의로 바꾸지 않는다.
+- 증거목록: 아래 형식의 마크다운 표로 작성한다. 열은 6개이고 순서를 바꾸지 않는다.
+  | 호증번호 | 서증명 | 입증취지 | 원본 | 작성자 | 작성일 |
+  |---|---|---|---|---|---|
+  - 호증번호·원본·작성자·작성일은 **사용자가 전달한 값을 그대로** 쓴다. 바꾸거나
+    순서를 재배열하지 않는다.
   - 입증취지가 비어 있으면 서증명과 사건명을 근거로 통상적인 입증취지를 1문장으로
     제안하되, 구체적 사실관계(금액·날짜·경위)를 창작하지 않는다.
   - 입증취지가 주어져 있으면 법률 문언으로 다듬어 사용한다.
-  - 작성일이 비어 있으면 [작성일 기재 필요] 로 표시한다.
-- 비고: "※ 각 호증은 원본을 소지하고 있으며, 필요 시 법원에 제출하겠습니다." 관례 문구를 기재한다.
+  - 작성자·작성일이 비어 있으면 각각 [작성자 기재 필요], [작성일 기재 필요] 로 표시한다.
+    민사소송규칙 제105조 제1항이 요구하는 기재사항이라 빈칸으로 두지 않는다.
+- 비고: "※ 각 호증은 원본을 소지하고 있으며, 필요 시 법원에 제출하겠습니다." 관례 문구로
+  시작한다. 개별 증거에 [비고] 가 주어졌으면 "※ {호증번호}에는 …" 형식으로 줄을 덧붙인다.
 - 관할법원: "○○법원 귀중" 형식.
 
 ## 금지 사항
@@ -68,12 +81,23 @@ def build_user_prompt(d: EvidenceListInput) -> str:
     submitter = SUBMITTER_ROLE_LABELS[d.submitter_role]
     prefix = EVIDENCE_PREFIX[d.submitter_role]
 
-    items = "\n".join(
-        f"- {prefix} 제{i}호증 | 서증명: {item.name}"
-        f" | 작성일: {item.date or '미기재'}"
-        f" | 입증취지: {item.purpose or '미기재 - 제안 필요'}"
-        for i, item in enumerate(d.evidence_items, start=1)
-    )
+    lines = []
+    for i, item in enumerate(d.evidence_items, start=d.evidence_start_no):
+        label = f"{prefix} 제{i}호증"
+        if item.branch_no:
+            label += f"의 {item.branch_no}"
+        parts = [
+            f"- {label}",
+            f"서증명: {item.name}",
+            f"입증취지: {item.purpose or '미기재 - 제안 필요'}",
+            f"원본: {ORIGINAL_LABELS[item.original_type]}",
+            f"작성자: {item.author or '미기재'}",
+            f"작성일: {item.date or '미기재'}",
+        ]
+        if item.note:
+            parts.append(f"비고: {item.note}")
+        lines.append(" | ".join(parts))
+    items = "\n".join(lines)
 
     return f"""[사건 번호] {d.case_no}
 [관할법원] {d.court}
