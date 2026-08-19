@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from app.documents.schemas.common import CitedPrecedent, Party
+
 
 class LawsuitType(str, Enum):
     """소송 유형 (step1 에서 선택)."""
@@ -37,40 +39,6 @@ class DemandMethod(str, Enum):
     MESSAGE = "message"  # 문자·카카오톡
     VERBAL = "verbal"  # 전화·구두
     NONE = "none"  # 요구한 적 없음
-
-
-class Party(BaseModel):
-    """당사자 (원고/피고). 공동소송 대비 리스트로 받는다."""
-
-    name: str = Field(description="이름 또는 상호", examples=["홍길동"])
-    resident_id: str | None = Field(
-        None,
-        description="주민등록번호 (선택). LLM에는 전달되지 않으며 문서 표시는 프론트에서 처리",
-        examples=["900101-1234567"],
-    )
-    address: str = Field(
-        description="주소 (도로명)", examples=["서울특별시 서초구 서초대로 12"]
-    )
-    service_address: str | None = Field(
-        None,
-        description="송달받을 주소 (주소와 다를 때만)",
-        examples=["서울특별시 강남구 테헤란로 1"],
-    )
-    fax: str | None = Field(None, description="팩스 번호", examples=["02-1234-5678"])
-    representative: str | None = Field(
-        None,
-        description="법인 대표자 또는 미성년자의 법정대리인. 당사자 표시에 병기된다",
-        examples=["대표이사 김철수"],
-    )
-
-
-class CitedPrecedent(BaseModel):
-    """인용할 판례 (판례 검색에서 담아온 것)."""
-
-    case_no: str = Field(description="사건번호", examples=["대법원 2020다12345"])
-    summary: str | None = Field(
-        None, description="판례 요지", examples=["임대차 종료 시 보증금 반환 의무"]
-    )
 
 
 class ComplaintInput(BaseModel):

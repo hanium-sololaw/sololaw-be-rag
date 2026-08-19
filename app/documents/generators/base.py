@@ -12,7 +12,9 @@ class BaseGenerator(ABC):
     """문서 유형별 생성기 베이스."""
 
     # 출력 마크다운 헤더 → 구조화 필드명. service 가 완료 시 섹션 파싱에 사용.
-    section_map: ClassVar[dict[str, str]] = {}
+    # None 이면 헤더 이름을 그대로 키로 쓴다 — 신청서처럼 종류마다 섹션 구성이
+    # 달라 필드명을 미리 정할 수 없는 경우.
+    section_map: ClassVar[dict[str, str] | None] = {}
 
     @abstractmethod
     def generate_stream(self, inputs: dict) -> AsyncIterator[str]:

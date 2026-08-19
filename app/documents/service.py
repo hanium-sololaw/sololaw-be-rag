@@ -50,8 +50,12 @@ def _sse(event: str, data: dict) -> str:
 _HEADER_RE = re.compile(r"^##\s*(.+?)\s*$")
 
 
-def _parse_sections(text: str, section_map: dict[str, str]) -> dict[str, str]:
-    """생성 텍스트를 '## 헤더' 기준으로 잘라 {필드명: 본문} 으로 변환."""
+def _parse_sections(text: str, section_map: dict[str, str] | None) -> dict[str, str]:
+    """생성 텍스트를 '## 헤더' 기준으로 잘라 {필드명: 본문} 으로 변환.
+
+    section_map 이 None 이면 헤더 이름을 그대로 키로 쓴다 (신청서처럼 종류마다
+    섹션이 다른 경우). 이때 키 순서는 문서에 나온 순서와 같다.
+    """
     sections: dict[str, str] = {}
     current: str | None = None
     buf: list[str] = []
@@ -60,7 +64,8 @@ def _parse_sections(text: str, section_map: dict[str, str]) -> dict[str, str]:
         if m:
             if current:
                 sections[current] = "\n".join(buf).strip()
-            current = section_map.get(m.group(1))
+            header = m.group(1)
+            current = header if section_map is None else section_map.get(header)
             buf = []
         elif current:
             buf.append(line)
