@@ -70,6 +70,12 @@ class EvidenceListInput(BaseModel):
     court: str = Field(
         description="사건이 계속 중인 법원", examples=["서울중앙지방법원"]
     )
+    panel: str | None = Field(
+        None,
+        description="담당 재판부. 기일통지서·전자소송 화면에 적혀 있다. "
+        "있으면 '○○법원 제12민사단독 귀중' 으로 표시된다",
+        examples=["제12민사단독"],
+    )
     plaintiff: str = Field(description="원고 이름", examples=["홍길동"])
     defendant: str = Field(description="피고 이름", examples=["김철수"])
     submitter_role: SubmitterRole = Field(
