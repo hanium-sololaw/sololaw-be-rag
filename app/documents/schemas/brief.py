@@ -59,6 +59,7 @@ class BriefInput(BaseModel):
                 "brief_no": "준비서면(2)",
                 "stage": "상대방 답변서를 받았어요",
                 "hearing_date": "2026-08-22",
+                "agent": "변호사 이영희",
                 "opponent_doc_type": "준비서면(1)",
                 "opponent_doc_date": "2026-08-07",
                 "opponent_claim": "피고는 제가 나갈 때 도배랑 장판을 다 망가뜨려 놨다고 "
@@ -126,6 +127,12 @@ class BriefInput(BaseModel):
     )
     hearing_date: str | None = Field(
         None, description="제출 기한 / 다음 변론기일", examples=["2026-08-22"]
+    )
+    agent: str | None = Field(
+        None,
+        description="소송대리인. 선임했을 때만 보낸다. 준비서면 기재사항이라 "
+        "당사자 표시 아래에 '원고 소송대리인  변호사 ○○○' 로 들어간다",
+        examples=["변호사 이영희"],
     )
 
     # --- 2단계: 상대방은 뭐라고 했나요 ---

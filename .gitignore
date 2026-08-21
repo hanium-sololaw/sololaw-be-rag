@@ -10,3 +10,6 @@ __pycache__/
 # Claude Code (personal only)
 CLAUDE.local.md
 .claude/settings.local.json
+
+# Playwright MCP (로컬 브라우저 세션 산출물)
+.playwright-mcp/
