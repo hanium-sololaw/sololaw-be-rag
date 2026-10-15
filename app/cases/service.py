@@ -410,9 +410,18 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
 
     async with httpx.AsyncClient() as http:
         # (a) 키워드 후보 — law.go.kr 실시간 검색 (최신 판례 커버)
-        total, keyword_items = await client.search_precedents(
-            http, req.query, display=_CANDIDATES
-        )
+        # law.go.kr 장애 시 벡터 후보만으로 진행한다. 이후 law.go.kr 호출(주문 재조회·
+        # 조문 제목)도 건너뛴다 — 호출마다 타임아웃(10초)을 기다리면 응답이 40초를 넘는다.
+        law_error: client.LawApiError | None = None
+        try:
+            total, keyword_items = await client.search_precedents(
+                http, req.query, display=_CANDIDATES
+            )
+        except client.LawApiError as e:
+            logger.warning(
+                "law.go.kr 키워드 검색 실패 — 벡터 후보만 사용", exc_info=True
+            )
+            law_error, total, keyword_items = e, 0, []
         keyword_items = [
             i
             for i in keyword_items
@@ -435,7 +444,13 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
         except Exception:
             logger.warning("벡터 검색 미가용 — 키워드 후보만 사용", exc_info=True)
 
+        # 두 경로가 모두 비면 장애를 그대로 알린다 (빈 결과로 위장하지 않음)
+        if law_error and not vector_rows:
+            stats_task.cancel()
+            raise law_error
+
         items = _merge_candidates(keyword_items, vector_rows)
+        total = total or len(items)
 
         # 본문 확보 — 벡터 후보는 코퍼스 프리로드 사용, 키워드 후보만 API 조회
         async def _detail_of(item: dict) -> dict:
@@ -463,7 +478,7 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
         # 승패 판정의 근거는 주문인데 코퍼스에는 주문이 없다.
         # 본선 진출작 중 주문이 빠진 건만 law.go.kr 에서 마저 채운다.
         missing = [i for i, _ in finalists if not details[i].get("주문")]
-        if missing:
+        if missing and not law_error:
             refetched = await asyncio.gather(
                 *(
                     client.fetch_precedent_detail(http, str(items[i]["판례일련번호"]))
@@ -510,8 +525,14 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
     ranked_statutes = _aggregate_statutes(
         [details[i].get("참조조문", "") for i, _ in finalists]
     )
-    async with httpx.AsyncClient() as http:
-        statutes = await _build_statutes(http, ranked_statutes)
+    if law_error:
+        statutes = [
+            RelatedStatute(name=f"{law} 제{jo}조{ui}", title=None, count=count)
+            for (law, jo, ui), count in ranked_statutes
+        ]
+    else:
+        async with httpx.AsyncClient() as http:
+            statutes = await _build_statutes(http, ranked_statutes)
 
     # 통계가 실패해도 카드·법령은 그대로 내려준다.
     try:
