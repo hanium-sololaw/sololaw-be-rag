@@ -194,6 +194,7 @@ async def fetch_statute_title(
             title = titles[0] if titles else None
     except Exception:
         logger.warning("조문 제목 조회 실패 (%s 제%s조)", law_name, jo, exc_info=True)
+        return None  # 실패는 캐시하지 않는다 — API 복구 후 다시 조회되도록
 
     _title_cache[cache_key] = title
     return title
