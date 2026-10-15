@@ -67,7 +67,7 @@ class SearchRequest(_SearchBase):
     # 422 가 난다 — 이름 붙은 예시는 미디어 타입 레벨에만 쓸 수 있다.
 
     limit: int = Field(
-        5, ge=1, le=10, description="AI 분석해 반환할 판례 수 (기본 5, 최대 10)"
+        5, ge=1, le=25, description="AI 분석해 반환할 판례 수 (기본 5, 최대 25)"
     )
     sample_size: int = Field(
         30,
