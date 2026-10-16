@@ -1,6 +1,6 @@
 # AGENTS.md — sololaw-be-rag (FastAPI AI 서버) Codex 작업 지침
 
-> 상태: 문서 생성(`app/documents/`)·판례 검색(`app/cases/`, 하이브리드 RAG 포함) 도메인 구현·배포 완료, CI/CD 운영 중. 문서 생성 4종과 판례 검색 화면 대조·연동 문서 전달 완료는 `CLAUDE.md`의 2026-08-22 기록 기준이다. 대시보드 AI 제안·기일통지서 PDF 추출·독립 증거 분석 도메인은 미착수. **JWT 검증 미구현 — 우선 과제.** `(TBD)` 항목은 변경될 수 있다.
+> 상태: 문서 생성(`app/documents/`)·판례 검색(`app/cases/`, 하이브리드 RAG 포함) 도메인 구현·배포 완료, CI/CD 운영 중. 문서 생성 4종과 판례 검색 화면 대조·연동 문서 전달 완료는 `CLAUDE.md`의 2026-08-22 기록 기준이다. 대시보드 AI 제안·기일통지서 PDF 추출·독립 증거 분석 도메인은 미착수. **Multi-Agent(LangGraph) 전환은 이 브랜치(`feature/multi-agent`)에 구현·CI 통과, main 미머지(2026-10-17)** — `## Multi-Agent 구조`, `## KIPS 논문 심사 대응` 참고. **JWT 검증 미구현 — 우선 과제.** `(TBD)` 항목은 변경될 수 있다.
 
 ## 프로젝트 개요
 나홀로 소송(변호사 없이 진행하는 민사소송)을 돕는 AI Agent의 **FastAPI 기반 AI 추론 서버**다.
@@ -21,7 +21,7 @@
 ## 기술 스택
 - Framework: FastAPI + Uvicorn
 - Package/venv: **uv** (Python 3.11+)
-- AI/ML: LangChain, LangGraph (도입 예정)
+- AI/ML: **LangGraph**(1.2) — 문서 생성·판례 검색을 `StateGraph`로 구성한다. LangChain은 쓰지 않는다
 - LLM: **OpenAI API** — 기본 모델 gpt-4o, `OPENAI_MODEL` 설정으로 교체 가능
 - RAG: **pgvector** — RAG 전용 `vector-db` 컨테이너, 기본 임베딩 모델 `text-embedding-3-small`(1536차원)
 - 판례·법령 데이터: **국가법령정보센터 Open API**(law.go.kr), 인증키 `LAW_API_KEY`(OC)
@@ -51,7 +51,14 @@
   - `client.py`: 국가법령정보센터 판례·본문·조문 제목 조회
   - `embedding.py`: pgvector 적재·유사도 검색
   - `prompts/`: rerank·relevance·keywords·outcome
+- `app/agent/` — Multi-Agent 오케스트레이션. 라우터가 이 그래프를 부르고, 노드는 기존 도메인 함수를 재사용한다
+  - `search_graph.py`: `/cases/search` 그래프
+  - `document_graph.py`: `/documents/*/generate` 그래프, SSE 스트리밍(`stream_document`)
+  - `verify.py`: 입력에 없는 사건번호 검출
+  - `schemas.py`, `prompts/`: Supervisor·생성 전 판례 선별·근거 설명 프롬프트와 구조화 출력
 - `scripts/collect_precedents.py` — 공개 판례 코퍼스 수집·적재
+- `scripts/check_agents.py` — 그래프 분기 회귀 점검. 외부 호출 없음
+- `scripts/benchmark_agents.py`, `scripts/benchmark_noise.py`, `scripts/eval_search.py`, `scripts/benchmark/` — 논문 심사 대응 비교·평가. OpenAI 비용 발생
 - 향후 도메인: `app/evidence/`(독립 증거 분석) 등 동일 패턴
 - 엔트리는 루트 `main.py` — 각 도메인 `router`를 `/api/v1` 아래로 `include_router`
 
@@ -105,10 +112,32 @@ docker exec -d sololaw-be-rag sh -c "python -u -m scripts.collect_precedents --p
 
 - 수집 중 배포하면 앱 컨테이너 재시작으로 작업이 종료되므로 머지를 피한다. 중단 후 재실행하면 이미 적재된 판례는 건너뛴다.
 
-## 아키텍처 (잠정, TBD)
+## Multi-Agent 구조
+KIPS 논문 3.1의 "LangGraph StateGraph 기반 Multi-Agent" 서술에 코드를 맞춘 구조다. **기존 엔드포인트의 요청·응답은 그대로 유지한다** — 프론트 수정 없음.
+
 ```text
-사용자 입력 -> Supervisor Agent -> 판례 검색 Agent (RAG) -> 문서 생성 Agent -> 설명 Agent (XAI) -> 최종 출력
+판례 검색: Supervisor(검색어 확정) -> 판례 검색 Agent(하이브리드 후보·예선) -> 설명 Agent(승패·참고 포인트·법령·통계)
+문서 생성: Supervisor(판례 검색 여부) -> [판례 검색 Agent] -> 생성 전 판례 선별 -> 문서 생성 Agent
+           -> 사건번호 검증 -> 설명 Agent(근거 설명·근거 부합 판정)   * 검증 실패 시 재작성, 2회 한도 공유, 초과 시 error
 ```
+
+- 사용자가 고른 판례는 덮어쓰지 않는다. 증거목록은 판례 검색을 건너뛴다.
+- 판례 검색 Agent는 예선 70점 이상·판시사항/판결요지가 있는 상위 3건을 인용 후보로 삼고, 발췌(최대 2,000자)를 검증용으로 보관한다.
+- **관련성은 생성 전, 근거 부합은 생성 후에 판정한다.** 생성 전 선별은 원래 사건 입력만 보고 `relevant/uncertain/irrelevant`를 일괄 판정한다(irrelevant 제외, uncertain은 자동 보강 판례만 제외). 생성 후에는 발췌 대비 `consistent/contradicts/not_found`를 판정하고 `contradicts`만 주장·구절을 짚어 재작성시킨다. 관련 판례를 근거 불일치만으로 목록에서 빼지 않는다.
+- SSE 추가분: `retry` 이벤트, `done.explanations[{citation, kind, supports, exists, grounded}]`. `exists`는 존재 확인, `grounded`는 근거 부합 LLM 판정(발췌 기준, 미확인은 null)이다. 프론트는 `done.sections`만 쓴다.
+- 설명 LLM이 본문에 없는 인용을 만들 수 있어 본문에 실제로 있는 인용만 남긴다.
+- 소장 청구원인 근거·결론 문장은 `prompts/complaint.py`의 `CAUSE_RULES`에서 해당 소송 유형 것만 주입한다. 공통 규칙에 특정 유형 문장을 두면 다른 유형에 옮겨 쓴다.
+- 절차 안내 Agent는 구현하지 않는다(연결할 화면 없음).
+- main 머지 전 확인: 응답 시간 증가, 프론트 타임아웃, 인증 없는 호출 비용, 노션 연동 문서의 `retry`·`explanations` 반영.
+
+## KIPS 논문 심사 대응
+2026-10-15 게재 수락, 심사자 #1 "수정 후 게재". 심사의견은 ① 다양한 사건 유형 질의로 검색 정확도·문서 품질 검증, ② 단일 Agent와 문서 정확도·처리 시간·비용 비교다. 자동 평가로 대응했고 실험 기록은 레포 밖 `~/Desktop/sololaw-docs/experiments/`에 있다.
+
+- 심사의견 ②: 두 방식에 같은 입력·판례·프롬프트를 준다. 측정상 장점은 무관 판례 인용 감소이고, 시간·비용은 늘었다. 대표 그림과 전체 표는 `experiments/figures/`에 있다.
+- 심사의견 ①: 같은 코퍼스에서 키워드·벡터·하이브리드·재랭킹을 비교했다. 지표는 **원본 판례 재검색 성능**이며 전문가 관련도로 표현하지 않는다.
+- 비교 실험은 두 방식의 시작 자료를 같게 고정하고, 질의·기대값·라벨은 실행 전에 커밋한다. 조건 위반 실행은 지우지 않고 `*-invalid` 폴더에 사유와 함께 남긴다.
+- 유리한 결과만 고르거나 불리한 결과를 숨겨 전체적으로 우수한 것처럼 제시하지 않는다. 시간·비용은 심사자 요청 항목이다.
+- EC2는 `ssh hani`로 접속한다. 벡터 DB가 필요한 평가는 컨테이너 `/tmp`에서 직렬 실행하고 끝나면 지운다. 수집·배포와 겹치지 않게 한다.
 
 ## 연동 (프론트 직접 호출)
 - 프론트엔드가 본 FastAPI 서버를 **직접 호출**한다. AI 기능 한정이다.
@@ -183,6 +212,8 @@ uv run python -c "import main"
 - CI는 Ruff lint·format 검사와 `uv sync --frozen` 후 `import main` 검증을 수행한다. OpenAI 키 없이도 import가 가능해야 한다.
 - 순수 로직은 인라인 Python 점검으로 확인할 수 있다. 프롬프트·응답 변경은 실제 OpenAI 호출로 확인하며 수행 여부와 결과를 보고한다.
 - `VECTOR_DB_URL`이 없는 환경에서는 키워드 폴백만 검증된다. 하이브리드 경로는 벡터 DB가 연결된 환경에서 확인하고, 응답 `similarity`와 주문 재조회 경로를 점검한다.
+- 그래프 분기 회귀는 `PYTHONPATH=. .venv/bin/python -m scripts.check_agents`로 확인한다.
+- Ruff는 `.venv`에 없을 수 있다. 그때는 `uvx ruff check .` / `uvx ruff format --check .`를 쓴다.
 - 문서만 변경할 때는 문서 대조와 `git diff --check`로 검증한다.
 
 ## 커밋 메시지 규칙
