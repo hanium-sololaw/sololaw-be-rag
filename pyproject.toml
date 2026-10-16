@@ -14,6 +14,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "asyncpg>=0.31.0",
     "pgvector>=0.4.2",
+    "langgraph>=1.2.15",
 ]
 
 # FastAPI 는 File()·Form()·Depends() 를 인자 기본값으로 쓰는 게 정상 관용구다.
