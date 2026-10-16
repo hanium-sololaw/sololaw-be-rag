@@ -1,6 +1,6 @@
 # CLAUDE.md — sololaw-be-rag (FastAPI AI 서버)
 
-> 상태: 문서 생성(`app/documents/`)·판례 검색(`app/cases/`, 하이브리드 RAG 포함) 도메인 구현·배포 완료, CI/CD 운영 중. **문서 생성 4종과 판례 검색 모두 화면 대조·검증 완료, 연동 문서 9쪽 노션 전달 완료(2026-08-22).** 대시보드 AI 제안·기일통지서 PDF 추출 도메인은 미착수. **인증(JWT) 미구현 — 최우선 과제.** `(TBD)` 항목은 변경될 수 있음.
+> 상태: 문서 생성(`app/documents/`)·판례 검색(`app/cases/`, 하이브리드 RAG 포함) 도메인 구현·배포 완료, CI/CD 운영 중. **문서 생성 4종과 판례 검색 모두 화면 대조·검증 완료, 연동 문서 9쪽 노션 전달 완료(2026-08-22).** **Multi-Agent(LangGraph) 전환은 `feature/multi-agent` 브랜치에 구현·CI 통과, main 미머지(2026-10-17)** — 아래 `## Multi-Agent 구조`·`## KIPS 논문 심사 대응`. 대시보드 AI 제안·기일통지서 PDF 추출 도메인은 미착수. **인증(JWT) 미구현 — 최우선 과제.** `(TBD)` 항목은 변경될 수 있음.
 
 ## 프로젝트 개요
 나홀로 소송(변호사 없이 진행하는 민사소송)을 돕는 AI Agent의 **FastAPI 기반 AI 추론 서버**.
@@ -21,7 +21,7 @@
 ## 기술 스택
 - Framework: FastAPI + Uvicorn
 - Package/venv: **uv** (Python 3.11+)
-- AI/ML: LangChain, LangGraph (도입 예정)
+- AI/ML: **LangGraph**(1.2) — 문서 생성·판례 검색을 `StateGraph` 로 구성 (`feature/multi-agent`, main 미머지). LangChain 은 쓰지 않는다
 - LLM: **OpenAI API** — 기본 모델 gpt-4o, `OPENAI_MODEL` 설정으로 교체 가능
 - RAG: **pgvector** (RAG 전용 `vector-db` 컨테이너) + `text-embedding-3-small`(1536차원) — 판례 코퍼스 약 4,500건 적재·운영 중
 - 판례·법령 데이터: **국가법령정보센터 Open API** (law.go.kr) — 인증키 `LAW_API_KEY`(OC)
@@ -64,8 +64,25 @@
 
 배포 관련으로 `docker/`(Dockerfile·docker-compose.yml), `.github/workflows/`(ci.yml·cd.yml), 루트 `.dockerignore`가 추가돼 있다.
 
-## 아키텍처 (잠정, TBD)
-사용자 입력 → Supervisor Agent → 판례 검색 Agent (RAG) → 문서 생성 Agent → 설명 Agent (XAI) → 최종 출력
+## Multi-Agent 구조 (`feature/multi-agent`, main 미머지)
+KIPS 논문 3.1 이 "LangGraph StateGraph 기반 Multi-Agent" 를 서술하는데 코드는 고정 파이프라인이라 코드를 논문에 맞췄다. **기존 엔드포인트의 요청·응답은 그대로이고 내부만 그래프를 거친다 — 프론트 수정 없음.** 라우터가 `app/agent/` 의 그래프를 부르고, 각 노드는 기존 도메인 함수를 재사용한다.
+- `app/agent/search_graph.py` — `/cases/search`: Supervisor(검색어 확정) → 판례 검색 Agent(`service.retrieve`: 하이브리드 후보·예선) → 설명 Agent(`service.explain`: 승패·참고 포인트·관련 법령 + 통계). 직선 구조라 분기는 없다. 통계 작업은 그래프 밖 `tasks` 리스트로 들고 있다가 실패·취소 시 `finally` 에서 정리한다(노드 예외 시 상태가 반환되지 않기 때문).
+- `app/agent/document_graph.py` — `/documents/*/generate`: Supervisor(사용자가 판례를 안 줬으면 LLM 이 검색 여부 판단, 증거목록은 건너뜀) → 판례 검색 Agent(예선 70점 이상·판시사항/판결요지 있는 상위 3건, 발췌 2,000자 보관) → **생성 전 판례 선별**(원래 사건 입력만 보고 `relevant/uncertain/irrelevant` 일괄 판정 — irrelevant 는 제외, uncertain 은 자동 보강 판례만 제외) → 문서 생성 Agent → 검증(입력·판례 목록에 없는 사건번호, `verify.py`) → 설명 Agent(인용 근거 설명 + 발췌 대비 `consistent/contradicts/not_found` 판정). 사건번호 오류·`contradicts` 는 주장·구절을 짚어 재작성시키고 **두 검증이 재작성 2회 한도를 공유, 넘기면 `error`**. 관련 판례는 근거 불일치만으로 빼지 않는다.
+- SSE 추가분: `retry` 이벤트(재작성 직전), `done.explanations[{citation, kind, supports, exists, grounded}]`. `exists` = 존재 확인(판례는 판례 DB 조회분, 조문은 law.go.kr 조회 성공), `grounded` = 근거 부합 **LLM 판정**(발췌 기준, 미확인은 null). 프론트는 delta 를 쓰지 않고 `done.sections` 만 쓴다(확인함) — 재작성 루프가 화면에 영향 없다.
+- 설명 Agent 는 제공 목록만 보고 본문에 없는 인용을 지어낼 수 있어, 본문에 실제로 있는 인용만 코드로 남긴다.
+- 관련성 판정을 생성 **후**에 두었더니 생성기가 틀리게 쓴 본문을 보고 관련 판례까지 "무관"으로 빼는 혼선이 났다. 그래서 관련성(생성 전, 본문 없이)과 근거 부합(생성 후)을 분리했다.
+- 소장 청구원인의 근거·결론 문장은 `prompts/complaint.py` 의 `CAUSE_RULES` 에서 **해당 소송 유형 것만 user prompt 에 주입**한다. 공통 SYSTEM 에 손해배상 예시 문장을 두었더니 대여금·보증금·명도 소장에도 "불법행위…손해를 배상할 책임" 이 섞였다(main 에도 있던 버그).
+- 절차 안내 Agent 는 만들지 않았다(프론트에 연결할 자리 없음 — 절차 안내는 정적 목업, 대시보드 제안은 규칙 기반). 논문 3.1 의 하위 Agent 목록에서 빼야 한다.
+- 회귀 점검: `PYTHONPATH=. .venv/bin/python -m scripts.check_agents` — LLM·law.go.kr·벡터 DB 를 가짜로 바꿔 폴백·재작성·선별·통계 정리 분기를 확인. 외부 호출 없음.
+- **머지 전 확인**: 문서 생성 응답 시간 증가(실측 단일 대비 약 1.6~1.7배, 판례 검색이 끼면 더), 프론트 타임아웃, 인증 없는 상태의 호출 비용 증가, 노션 연동 문서에 `retry`·`explanations` 추가. 머지하면 이 문서의 "main 미머지" 표기를 고친다.
+
+## KIPS 논문 심사 대응 (2026-10-17, 개발·실험 완료)
+논문 「나홀로법에」(KIPS 학술발표대회) 2026-10-15 게재 수락, 심사자 #1 "수정 후 게재". 심사의견 ① 다양한 사건 유형 질의로 검색 정확도·문서 품질 검증, ② 단일 Agent 와 문서 정확도·처리 시간·비용 비교. 전문가 평가는 하지 않고 자동 평가로 대응했다. 실험 기록은 레포 밖 `~/Desktop/sololaw-docs/experiments/` (각 폴더 README·meta.json·원자료).
+- 심사의견 ② — `scripts/benchmark_agents.py`(실험 A, 지정 판례), `scripts/benchmark_noise.py`(실제 검색 후보 고정), 시나리오·후보·라벨은 `scripts/benchmark/`. 두 방식에 **같은 입력·판례·프롬프트**를 준다. 결과: 측정상 장점은 **무관 판례 인용 감소 하나**(지정 판례 3/6→0/6, 키워드 검색 후 필터 적용 후보 3/18→0/18, 필터 전 후보 0/21 동률), 시간 약 1.6~1.7배·비용 약 1.6~2.1배 증가. 대표 그림·전체 표는 `experiments/figures/`(`REPORT.md`).
+- 심사의견 ① — `scripts/eval_search.py`, 질의 120개(9개 층, 실행 전 커밋), 같은 코퍼스(4,524건) 비교. 하이브리드+재랭킹 Recall@1 63.3·Recall@10 82.5·MRR 0.704 로 최고. **"원본 판례 재검색 성능"** 이라 전문가 관련도로 쓰지 않는다. 운영 경로(law.go.kr 전국 DB)는 검색 대상이 달라 참고 행.
+- 실험에서 배운 것: 실행 결과가 조건 위반으로 두 번 무효가 됐다 — Multi-Agent 만 스스로 검색해 자료를 더 받음, Supervisor 가 검색을 건너뛰어 자료를 덜 받음. **비교는 두 방식의 시작 자료를 같게 고정**하고(필요하면 생성 전 선별 단계에 직접 투입), 기대값·라벨은 실행 전에 커밋한다. 무효 실행은 지우지 말고 `*-invalid` 폴더에 사유와 함께 남긴다.
+- 논문에서 고칠 곳(저자 몫): 3.1 하위 Agent 목록(절차 안내 제외), 3.2 코퍼스 1,736→4,524건, 3.4 준비서면 헤더 서술(현재 코드는 헤더 하나), 4장 두 실험 결과·"향후 과제" 문장. 시간·비용은 심사자 요청 항목이라 빼면 안 된다.
+- EC2 접속은 `ssh hani`(`~/.ssh/config`). 평가처럼 벡터 DB 가 필요한 작업은 컨테이너 `/tmp` 에 스크립트를 복사해 `docker exec -d` 로 직렬 실행하고 끝나면 지운다. 서버 여유 메모리가 1GB 미만이다.
 
 ## 연동 (프론트 직접 호출)
 - 프론트엔드가 본 FastAPI 서버를 **직접 호출**한다 (AI 기능 한정). 로그인·CRUD는 프론트 → 스프링.
@@ -105,7 +122,9 @@
   - 설명은 조사 없이 명사형으로 간결하게 쓰고, 괄호를 넣지 않는다. 커밋 본문도 동일. 예) `✨ Feat: 신청서 자동 생성 구현` — `(SSE 스트리밍)` 같은 괄호 표기 금지
 - 환경변수는 `.env`로 관리, `.env.example` 항상 최신 유지. **실제 키·시크릿 커밋 금지.**
 - 의존성은 `uv add`로 추가하고 `pyproject.toml` / `uv.lock` 커밋.
-- 테스트 디렉토리(`tests/`)는 아직 없다. 프롬프트·응답 변경은 **실제 OpenAI 호출로 확인**하고, 순수 로직은 `PYTHONPATH=. .venv/bin/python -c "..."` 로 인라인 점검한다. CI 는 Ruff + 빌드 검증만 돈다.
+- 테스트 디렉토리(`tests/`)는 아직 없다. 프롬프트·응답 변경은 **실제 OpenAI 호출로 확인**하고, 순수 로직은 `PYTHONPATH=. .venv/bin/python -c "..."` 로 인라인 점검한다. 그래프 분기 회귀는 `scripts/check_agents.py`(feature/multi-agent). CI 는 Ruff + 빌드 검증만 돈다.
+- Ruff 는 `.venv` 에 없다 — `uvx ruff check .` / `uvx ruff format --check .` (CI 와 같음).
+- 벤치마크·평가는 OpenAI 비용이 든다(실험 A 60회 약 $1, 검색 평가 120질의 약 $7~8 — 재랭킹 호출당 후보 40건 발췌가 들어가 1만 토큰 안팎). 돌리기 전에 소규모 시험 실행으로 단가를 확인한다.
 - 로컬에는 `VECTOR_DB_URL` 이 없어 판례 검색이 **키워드 폴백**으로만 돈다. 하이브리드 경로(벡터 후보·주문 재조회)는 배포 후 실제 API 호출로 확인해야 한다 — `similarity` 에 값이 오면 벡터가 붙은 것이다.
 
 ## Claude Code 작업 방식
