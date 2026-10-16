@@ -17,10 +17,19 @@ class BaseGenerator(ABC):
     section_map: ClassVar[dict[str, str] | None] = {}
 
     @abstractmethod
-    def generate_stream(self, inputs: dict) -> AsyncIterator[str]:
+    def generate_stream(
+        self, inputs: dict, feedback: str | None = None
+    ) -> AsyncIterator[str]:
         """입력값으로 문서 본문을 스트리밍 생성한다.
+
+        feedback 은 설명 Agent 의 검증 지적 — 재작성 시에만 주어진다.
 
         텍스트 델타를 순차적으로 yield 하는 async generator 를 반환한다.
         (누적·구조화 파싱은 service 계층에서 담당)
         """
         raise NotImplementedError
+
+
+def feedback_message(feedback: str | None) -> list[dict]:
+    """재작성 지시를 user 메시지로 덧붙인다. 첫 생성이면 빈 리스트."""
+    return [{"role": "user", "content": feedback}] if feedback else []

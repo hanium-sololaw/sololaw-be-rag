@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator
 
 from app.core.config import settings
-from app.documents.generators.base import BaseGenerator
+from app.documents.generators.base import BaseGenerator, feedback_message
 from app.documents.prompts import brief as prompt
 from app.documents.schemas.brief import BriefInput
 from app.shared.llm import get_openai_client
@@ -12,7 +12,9 @@ from app.shared.llm import get_openai_client
 class BriefGenerator(BaseGenerator):
     section_map = prompt.SECTION_MAP
 
-    async def generate_stream(self, inputs: dict) -> AsyncIterator[str]:
+    async def generate_stream(
+        self, inputs: dict, feedback: str | None = None
+    ) -> AsyncIterator[str]:
         data = BriefInput(
             **inputs
         )  # dict → 타입 검증 (라우터에서 이미 검증되지만 방어)
@@ -22,6 +24,7 @@ class BriefGenerator(BaseGenerator):
             messages=[
                 {"role": "system", "content": prompt.SYSTEM},
                 {"role": "user", "content": prompt.build_user_prompt(data)},
+                *feedback_message(feedback),
             ],
         )
         async for chunk in stream:

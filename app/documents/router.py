@@ -7,6 +7,7 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.agent import document_graph
 from app.documents import analyzer, service
 from app.documents.schemas.application import ApplicationInput
 from app.documents.schemas.brief import BriefInput
@@ -27,8 +28,14 @@ _SSE_DOC = """
 스트리밍 응답 — 발생 이벤트(event):
 
 1. **delta** — 생성 중 보이는 실시간 스트리밍 문자. **data: {"text": "..."}**
-2. **done** — 생성 완료. **data: {"sections": {섹션별 구조화}, "raw_text": "전체 원문"}**
-3. **error** — 실패 시. **data: {"message": "..."}**
+2. **done** — 생성 완료. **data: {"sections": {섹션별 구조화}, "raw_text": "전체 원문", "explanations": [{"citation", "kind", "supports", "exists", "grounded"}]}**
+   - explanations — 본문이 인용한 판례·조문별 근거 설명. `kind` 는 `precedent`(판례)·`statute`(조문)
+   - `exists` — **존재 확인**. 판례는 판례 DB(law.go.kr·코퍼스)에서 조회해 온 것이면 true, 조문은 law.go.kr 조문 조회에 성공하면 true. 확인하지 못하면 null (사용자가 고른 판례, 조회 실패한 조문)
+   - `grounded` — **근거 부합**. 조회한 판시사항·판결요지가 문서 속 주장을 뒷받침하는지에 대한 **LLM 판정**이다(판결 전문 기준 아님). 판례만 판정한다. 발췌에서 근거를 찾지 못했거나 발췌가 없으면 null(미확인). 법률적 타당성을 보증하지 않는다. 판례의 사건 관련성은 생성 전에 걸러지므로 응답에 무관한 판례는 남지 않는다
+3. **error** — 실패 시. **data: {"message": "..."}**. 인용 근거 검증이 재작성 한도(2회) 안에 통과하지 못해도 error 로 끝난다
+4. **retry** — 설명 Agent 가 확인되지 않은 사건번호를 찾아 재작성을 시작할 때. 이후 delta 가 처음부터 다시 온다. **data: {"attempt": 2, "reason": "..."}**
+
+내부는 Multi-Agent 그래프다 — Supervisor 가 판례 검색 필요 여부를 판단하고(사용자가 cited_precedents 를 보내면 그대로 사용), 판례 검색 → 문서 생성 → 근거 검증·설명 Agent 순으로 처리한다.
 """
 
 
@@ -69,7 +76,7 @@ def get_document_types():
 )
 async def generate_complaint(req: ComplaintInput):
     return StreamingResponse(
-        service.stream_document(DocumentType.COMPLAINT, req.model_dump()),
+        document_graph.stream_document(DocumentType.COMPLAINT, req.model_dump()),
         media_type=SSE_MEDIA,
     )
 
@@ -85,7 +92,7 @@ async def generate_complaint(req: ComplaintInput):
 )
 async def generate_brief(req: BriefInput):
     return StreamingResponse(
-        service.stream_document(DocumentType.BRIEF, req.model_dump()),
+        document_graph.stream_document(DocumentType.BRIEF, req.model_dump()),
         media_type=SSE_MEDIA,
     )
 
@@ -102,7 +109,7 @@ async def generate_brief(req: BriefInput):
 )
 async def generate_evidence_list(req: EvidenceListInput):
     return StreamingResponse(
-        service.stream_document(DocumentType.EVIDENCE_LIST, req.model_dump()),
+        document_graph.stream_document(DocumentType.EVIDENCE_LIST, req.model_dump()),
         media_type=SSE_MEDIA,
     )
 
@@ -175,6 +182,6 @@ async def analyze_evidence(
 )
 async def generate_application(req: ApplicationInput):
     return StreamingResponse(
-        service.stream_document(DocumentType.APPLICATION, req.model_dump()),
+        document_graph.stream_document(DocumentType.APPLICATION, req.model_dump()),
         media_type=SSE_MEDIA,
     )
