@@ -26,6 +26,7 @@ from pathlib import Path
 
 from app.agent import document_graph as dg
 from app.agent import verify
+from app.cases import service as case_service
 from app.core.config import settings
 from app.documents.prompts.application import SPECS
 from app.documents.registry import GENERATORS
@@ -81,6 +82,12 @@ def _instrument():
 
     client.chat.completions.parse = counted_parse
     client.chat.completions.create = counted_create
+
+
+async def _no_search(req):
+    """실험 A 는 두 방식에 같은 판례만 준다 — Multi-Agent 가 스스로 검색해 자료를 더 얻지 않게 한다.
+    Supervisor 의 검색 판단 호출은 구조의 일부라 그대로 두고 비용에 포함한다."""
+    return case_service.Retrieval(0, [], [], [], None)
 
 
 async def _single(doc_type, inputs):
@@ -235,6 +242,7 @@ def main():
     args = ap.parse_args()
     logging.disable(logging.CRITICAL)
     _instrument()
+    case_service.retrieve = _no_search
 
     data = json.loads(SCENARIOS.read_text())
     scenarios = [s for s in data["scenarios"] if not args.only or s["id"] in args.only]
@@ -263,6 +271,7 @@ def main():
         "concurrency": 1,
         "seed": args.seed,
         "vector_db": bool(settings.VECTOR_DB_URL),
+        "search": "disabled — 두 방식 모두 시나리오의 cited_precedents 만 사용",
     }
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
     print(json.dumps(summary, ensure_ascii=False, indent=1))
