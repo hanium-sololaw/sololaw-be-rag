@@ -1,10 +1,12 @@
 """실험 A-잡음 — 실제 검색 후보를 그대로 두 방식에 주고 인용 품질을 비교한다.
 
 후보는 scripts/benchmark/noise_candidates.json 에 실행 전 고정했다(검색어·후보·관련성 라벨).
-- operational: 운영과 같은 후보 단계 — 예선 상위 3건 중 70점 이상·본문 있음
-- prefilter  : 필터 전 후보를 사용한 잡음 조건 평가 — 예선 상위 5건 중 본문 있음(70점 필터 생략)
-Multi-Agent 는 운영 경로대로 Supervisor → 판례 검색 Agent 가 고정 후보를 받고, 단일 호출은 같은
-후보를 cited_precedents 로 받는다. 인용의 근거 불일치는 평가용 LLM 판정 하나로 두 방식을 같은
+- keyword_filtered  : 키워드 검색 후 필터 적용 후보 — 예선 상위 3건 중 70점 이상·본문 있음(운영 필터와 같음)
+- keyword_unfiltered: 키워드 검색 필터 전 후보(잡음 조건) — 예선 상위 5건 중 본문 있음(70점 필터 생략)
+후보는 로컬(벡터 DB 없음) 키워드 검색 결과다. 운영은 하이브리드 검색이라 후보가 다를 수 있다.
+두 방식의 시작 자료를 같게 하려고 Multi-Agent 는 고정 후보를 생성 전 선별 단계에 직접 넣는다
+(운영 그래프와 같은 선별·생성·검증·설명 노드, Supervisor·검색 단계만 생략 — 그 호출 비용은 빠진다).
+단일 호출은 같은 후보를 cited_precedents 로 받는다. 인용의 근거 불일치는 평가용 LLM 판정 하나로 두 방식을 같은
 기준으로 본다(평가 호출은 시스템 비용에 넣지 않는다).
 
 실행: PYTHONPATH=. .venv/bin/python -m scripts.benchmark_noise --reps 3 --out <결과 폴더>
@@ -19,17 +21,42 @@ import statistics
 from datetime import datetime
 from pathlib import Path
 
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from app.agent import document_graph as dg
 from app.agent import verify
-from app.cases import service as case_service
 from app.core.config import settings
 from app.shared.llm import get_openai_client
 from scripts import benchmark_agents as base
 
 HERE = Path(__file__).parent / "benchmark"
-CONDITIONS = {"operational": (3, 70), "prefilter": (5, 0)}  # (후보 수, 최소 예선 점수)
+# (후보 수, 최소 예선 점수)
+CONDITIONS = {"keyword_filtered": (3, 70), "keyword_unfiltered": (5, 0)}
+
+
+def _screen_graph():
+    """운영 문서 그래프에서 Supervisor·검색만 뺀 것 — 생성 전 선별부터 시작한다."""
+    g = StateGraph(dg.DocumentState)
+    g.add_node("screen_agent", dg.screen_agent)
+    g.add_node("generate_agent", dg.generate_agent)
+    g.add_node("verify", dg.verify_node)
+    g.add_node("explain_agent", dg.explain_agent)
+    g.add_edge(START, "screen_agent")
+    g.add_edge("screen_agent", "generate_agent")
+    g.add_edge("generate_agent", "verify")
+    g.add_conditional_edges(
+        "verify",
+        dg._route_after_check("explain_agent"),
+        ["explain_agent", "generate_agent", END],
+    )
+    g.add_conditional_edges(
+        "explain_agent", dg._route_after_check(END), ["generate_agent", END]
+    )
+    return g.compile()
+
+
+SCREEN_GRAPH = _screen_graph()
 
 JUDGE = """당신은 법률 문서의 판례 인용을 평가하는 검토자입니다.
 [판례 발췌]는 판시사항·판결요지 일부이며 판결 전문이 아닙니다.
@@ -86,12 +113,29 @@ async def judge(text, c):
     return v.verdict if v else "not_found"
 
 
+def _auto(c):
+    """운영 search_agent 가 만드는 것과 같은 형태의 자동 보강 판례."""
+    excerpt = (
+        f"[판시사항] {c['판시사항'] or '없음'}\n[판결요지] {c['판결요지'] or '없음'}"
+    )
+    return {**_cited(c), "source": excerpt[: dg._SOURCE_CHARS], "auto": True}
+
+
 async def run_one(sc, given, labels, system):
     with_given = {**sc["inputs"], "cited_precedents": [_cited(c) for c in given]}
     if system == "single":
         row = await base.run({**sc, "inputs": with_given}, "single")
     else:
-        # Multi-Agent 는 판례 없이 받아 운영 경로대로 검색 Agent 가 고정 후보를 가져온다
+        precedents = [_auto(c) for c in given]
+
+        async def from_screen(doc_type, inputs):
+            final = await SCREEN_GRAPH.ainvoke(
+                {"doc_type": doc_type, "inputs": inputs, "precedents": precedents}
+            )
+            status = "error" if final.get("issues") else "done"
+            return status, final.get("text", ""), final
+
+        base._multi = from_screen  # base.run 이 시간·토큰을 같은 방식으로 잰다
         empty = {**sc["inputs"], "cited_precedents": []}
         row = await base.run({**sc, "inputs": empty}, "multi")
     text = row["text"]
@@ -114,7 +158,9 @@ async def run_one(sc, given, labels, system):
         cited=[c["case_no"] for c in cited],
         cited_irrelevant=sorted(_nos(c["case_no"] for c in cited) & irrelevant),
         grounding=grounding,
-        searched=bool(row.get("screening")) if system == "multi" else None,
+        multi_started_with=len(row.get("screening") or [])
+        if system == "multi"
+        else None,
     )
     return row
 
@@ -141,10 +187,19 @@ def summarize(rows):
                     ),
                     "pass_all_pct": base._rate(rs, "pass_all"),
                     "runs_with_irrelevant_given": len(with_irr),
+                    # 분모 1: 무관 판례가 후보에 있던 실행 / 분모 2: 전체 실행
+                    "irrelevant_cited": sum(
+                        bool(r["cited_irrelevant"]) for r in with_irr
+                    ),
                     "irrelevant_cited_pct": _pct(
                         sum(bool(r["cited_irrelevant"]) for r in with_irr),
                         len(with_irr),
                     ),
+                    "irrelevant_cited_pct_all_runs": _pct(
+                        sum(bool(r["cited_irrelevant"]) for r in rs), len(rs)
+                    ),
+                    "runs_without_citation": sum(not r["cited"] for r in with_given),
+                    "runs_with_candidates": len(with_given),
                     "citations": len(g),
                     "contradicts_pct": _pct(g.count("contradicts"), len(g)),
                     "consistent_pct": _pct(g.count("consistent"), len(g)),
@@ -165,38 +220,15 @@ def summarize(rows):
     return out
 
 
-def _frozen_retrieve(cands):
-    async def retrieve(req):
-        # Multi-Agent 의 판례 검색 Agent 가 받는 결과를 고정 후보로 바꾼다
-        return case_service.Retrieval(
-            len(cands),
-            [
-                {
-                    "법원명": c["case_no"].rsplit(" ", 1)[0],
-                    "사건번호": c["case_no"].rsplit(" ", 1)[-1],
-                }
-                for c in cands
-            ],
-            [{"판시사항": c["판시사항"], "판결요지": c["판결요지"]} for c in cands],
-            [(i, c["score"]) for i, c in enumerate(cands)][: req.limit],
-            None,
-        )
-
-    return retrieve
-
-
 async def collect(scenarios, frozen, reps, seed, f):
     rng = random.Random(seed)
     rows = []
     for rep in range(reps):
         for cond, (n, min_score) in CONDITIONS.items():
-            # 운영 search_agent 의 후보 수·점수 기준을 조건에 맞춘다
-            dg._PRECEDENTS, dg._MIN_RELEVANCE = n, min_score
             for sc in scenarios:
                 fz = frozen["scenarios"][sc["id"]]
                 given = _usable(fz["candidates"], n, min_score)
                 labels = frozen["labels"]["by_scenario"].get(sc["id"], {})
-                case_service.retrieve = _frozen_retrieve(fz["candidates"])
                 for system in rng.sample(["single", "multi"], 2):
                     row = {
                         "rep": rep,
@@ -263,7 +295,8 @@ def main():
         "reps": args.reps,
         "seed": args.seed,
         "judge": "평가용 LLM 판정(gpt-4o), 두 방식 동일 기준, 시스템 비용 미포함",
-        "cost_scope": "검색 단계(예선 채점·임베딩) 비용 제외 — 후보를 고정해 두 방식 모두 검색하지 않음",
+        "cost_scope": "검색 단계(Supervisor 판단·예선 채점·임베딩) 비용 제외 — 두 방식 모두 고정 후보에서 시작",
+        "candidate_source": "로컬 키워드 검색(벡터 DB 없음). 운영은 하이브리드라 후보가 다를 수 있음",
         "vector_db": bool(settings.VECTOR_DB_URL),
     }
     (out / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
