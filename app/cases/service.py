@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import time
+from dataclasses import dataclass
 
 import httpx
 
@@ -88,7 +89,7 @@ _STATUTE_RE = re.compile(
 )
 
 
-def _aggregate_statutes(
+def aggregate_statutes(
     texts: list[str], top: int = 5
 ) -> list[tuple[tuple[str, str, str], int]]:
     """판례별 참조조문 텍스트에서 조문을 추출해 판례 단위로 집계한다.
@@ -397,17 +398,22 @@ async def _make_card(
     )
 
 
-async def search_cases(req: SearchRequest) -> SearchResponse:
-    # 키워드 확정 (내 사건 기반 탭은 case_context 에서 추출).
-    # 검색과 통계가 이 결과를 공유하므로 추출은 한 번만 돈다.
-    resolved = await resolve_query(req.query, req.case_context)
-    req = req.model_copy(update={"query": resolved})
+@dataclass
+class Retrieval:
+    """판례 검색 Agent 의 산출물 — 설명 Agent 가 이어받는다."""
 
-    # 통계는 검색과 독립이라 먼저 띄워두고 마지막에 거둔다 (벽시계 시간 절약).
-    stats_task = asyncio.create_task(
-        compute_statistics(resolved, req.category, req.sample_size)
-    )
+    total: int
+    items: list[dict]
+    details: list[dict]
+    finalists: list[tuple[int, int]]  # (후보 인덱스, 예선 점수) — 점수 내림차순
+    law_error: client.LawApiError | None
 
+
+async def retrieve(req: SearchRequest) -> Retrieval:
+    """하이브리드 후보 확보 → 본문 확보 → [예선] 일괄 채점 → 상위 limit 건 선발.
+
+    req.query 는 확정된 키워드여야 한다 (resolve_query 이후).
+    """
     async with httpx.AsyncClient() as http:
         # (a) 키워드 후보 — law.go.kr 실시간 검색 (최신 판례 커버)
         # law.go.kr 장애 시 벡터 후보만으로 진행한다. 이후 law.go.kr 호출(주문 재조회·
@@ -446,7 +452,6 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
 
         # 두 경로가 모두 비면 장애를 그대로 알린다 (빈 결과로 위장하지 않음)
         if law_error and not vector_rows:
-            stats_task.cancel()
             raise law_error
 
         items = _merge_candidates(keyword_items, vector_rows)
@@ -462,23 +467,29 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
             *(_detail_of(i) for i in items), return_exceptions=True
         )
 
-        details: list[dict] = []
-        for i, d in zip(items, detail_results):
-            if isinstance(d, BaseException):
-                logger.warning(
-                    "판례 본문 조회 실패 (serial=%s): %s", i.get("판례일련번호"), d
-                )
-                d = {}
-            details.append(d)
+    details: list[dict] = []
+    for i, d in zip(items, detail_results):
+        if isinstance(d, BaseException):
+            logger.warning(
+                "판례 본문 조회 실패 (serial=%s): %s", i.get("판례일련번호"), d
+            )
+            d = {}
+        details.append(d)
 
-        # [예선] 일괄 채점 → 상위 limit 건 선발
-        ranked = await _rerank(req, items, details)
-        finalists = ranked[: req.limit]
+    # [예선] 일괄 채점 → 상위 limit 건 선발
+    ranked = await _rerank(req, items, details)
+    return Retrieval(total, items, details, ranked[: req.limit], law_error)
 
-        # 승패 판정의 근거는 주문인데 코퍼스에는 주문이 없다.
-        # 본선 진출작 중 주문이 빠진 건만 law.go.kr 에서 마저 채운다.
-        missing = [i for i, _ in finalists if not details[i].get("주문")]
-        if missing and not law_error:
+
+async def explain(req: SearchRequest, r: Retrieval) -> SearchResponse:
+    """본선 진출작의 승패 분류·참고 포인트 생성·관련 법령 집계 (통계 제외)."""
+    items, details, finalists = r.items, list(r.details), r.finalists
+
+    # 승패 판정의 근거는 주문인데 코퍼스에는 주문이 없다.
+    # 본선 진출작 중 주문이 빠진 건만 law.go.kr 에서 마저 채운다.
+    missing = [i for i, _ in finalists if not details[i].get("주문")]
+    if missing and not r.law_error:
+        async with httpx.AsyncClient() as http:
             refetched = await asyncio.gather(
                 *(
                     client.fetch_precedent_detail(http, str(items[i]["판례일련번호"]))
@@ -486,15 +497,15 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
                 ),
                 return_exceptions=True,
             )
-            for i, d in zip(missing, refetched):
-                if isinstance(d, BaseException):
-                    logger.warning(
-                        "판례 주문 조회 실패 (serial=%s): %s",
-                        items[i].get("판례일련번호"),
-                        d,
-                    )
-                    continue
-                details[i] = {**details[i], **d}
+        for i, d in zip(missing, refetched):
+            if isinstance(d, BaseException):
+                logger.warning(
+                    "판례 주문 조회 실패 (serial=%s): %s",
+                    items[i].get("판례일련번호"),
+                    d,
+                )
+                continue
+            details[i] = {**details[i], **d}
 
     # 본선 진출작의 승패 분류 — 카드 배지용. 통계와 같은 분류기를 쓴다.
     outcomes = await classify_outcomes(
@@ -522,10 +533,10 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
     cards = await asyncio.gather(*(_bounded(i, s) for i, s in finalists))
 
     # 관련 법령은 본선 진출작 기준으로 집계 (무관한 판례의 조문 배제)
-    ranked_statutes = _aggregate_statutes(
+    ranked_statutes = aggregate_statutes(
         [details[i].get("참조조문", "") for i, _ in finalists]
     )
-    if law_error:
+    if r.law_error:
         statutes = [
             RelatedStatute(name=f"{law} 제{jo}조{ui}", title=None, count=count)
             for (law, jo, ui), count in ranked_statutes
@@ -534,13 +545,6 @@ async def search_cases(req: SearchRequest) -> SearchResponse:
         async with httpx.AsyncClient() as http:
             statutes = await _build_statutes(http, ranked_statutes)
 
-    # 통계가 실패해도 카드·법령은 그대로 내려준다.
-    try:
-        statistics = await stats_task
-    except Exception:
-        logger.exception("승소율 통계 산출 실패 — statistics 는 null 로 응답")
-        statistics = None
-
     return SearchResponse(
-        total=total, cases=list(cards), statutes=statutes, statistics=statistics
+        total=r.total, cases=list(cards), statutes=statutes, statistics=None
     )

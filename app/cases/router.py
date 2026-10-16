@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, HTTPException
 
-from app.cases import service
+from app.agent import search_graph
 from app.cases.client import LawApiError
 from app.cases.schemas import SearchRequest, SearchResponse
 
@@ -95,6 +95,6 @@ async def search(
     req: Annotated[SearchRequest, Body(openapi_examples=_SEARCH_EXAMPLES)],
 ):
     try:
-        return await service.search_cases(req)
+        return await search_graph.search_cases(req)
     except LawApiError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
